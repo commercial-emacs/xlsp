@@ -504,9 +504,8 @@ lsp/3.17/specification/#uri"
                                                       (point-min) (point-max))))))))
                         (when-let ((settings
                                     (bound-and-true-p lsp-workspace-configuration)))
-                          (jsonrpc-async-request
-                           conn
-                           'workspace/didChangeConfiguration
+                          (jsonrpc-notify
+                           conn 'workspace/didChangeConfiguration
                            (lsp-jsonify
                             (make-lsp-struct-did-change-configuration-params
                              :settings settings)))))
