@@ -27,14 +27,24 @@
 
 (require 'lsp-struct)
 
+(defun lsp-notification-param-type (method)
+  (let* ((struct-type
+          (intern
+           (lsp-notification
+            (list (cons 'method (lsp-hyphenate (symbol-name method)))))))
+         (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type))))
+    (cl-destructuring-bind (_sym _default &key type &allow-other-keys)
+        (assoc 'params slots)
+      type)))
+
 (cl-defgeneric lsp-handle-notification (conn method params))
 
 (cl-defmethod lsp-handle-notification (_conn _method _params)
   "Handle unknown.")
 
 (cl-defmethod lsp-handle-notification
-  (_conn (_method (eql textDocument/publishDiagnostics)) params)
+  (_conn (method (eql textDocument/publishDiagnostics)) params)
   "Handle it."
-  (ignore params))
+  (lsp-unjsonify (lsp-notification-param-type method) params))
 
 (provide 'lsp-handle-notification)

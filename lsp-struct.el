@@ -59,7 +59,7 @@
   (defun lsp-structure-type (alist)
     (let-alist alist
       (cond ((equal .kind "reference")
-             (make-symbol (concat "lsp-struct-" (lsp-hyphenate .name))))
+             (intern (concat "lsp-struct-" (lsp-hyphenate .name))))
             (.items
              (lsp-structure-type (aref .items 0)))
             (t (make-symbol (lsp-hyphenate (or .name .kind)))))))
@@ -210,5 +210,52 @@
    lsp-notifications))
 
 (defconst lsp-struct-empty (make-hash-table :size 1))
+
+(defun lsp-jsonify (obj)
+  "Go from lsp-struct to json-object-type (plist)."
+  (cond
+   ((listp obj) ; lsp-literal qua plist
+    obj)
+   ((vectorp obj)
+    (apply json-array-type (seq-map #'lsp-jsonify obj)))
+   ((not (get (type-of obj) 'cl--class))
+    obj)
+   (t
+    (let* ((json-object-type 'plist)
+           (result (json-new-object))
+           (type (type-of obj))
+           (slots (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
+      (dolist (slot (mapcar (lambda (x) (symbol-name (car x))) slots))
+        (when-let ((getter (intern-soft (concat (symbol-name type) "-" slot)))
+                   (getter-p (fboundp getter))
+                   (value (funcall getter obj)))
+          (setq result (json-add-to-object
+                        result (lsp-unhyphenate slot t) (lsp-jsonify value)))))
+      (or result lsp-struct-empty)))))
+
+(defun lsp-unjsonify (struct-type json)
+  "Go from json-object-type (plist) to lsp-struct."
+  (let ((json-object-type 'plist)
+        (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type)))
+        arguments)
+    (dolist (slot slots)
+      (cl-destructuring-bind (sym _ &key type &allow-other-keys)
+          slot
+        (when-let ((keyword (intern (concat ":" (lsp-hyphenate (symbol-name sym)))))
+                   (value (plist-get json keyword)))
+          (setq arguments
+                (nconc arguments
+                       (list keyword
+                             (pcase type
+                               (`(list-of ,property-type)
+                                (apply #'lsp-array
+                                       (seq-map
+                                        (lambda (elem)
+                                          (lsp-unjsonify property-type elem))
+                                        value)))
+                               ((pred (lambda (type) (get type 'cl--class)))
+                                (lsp-unjsonify type value))
+                               (_ value))))))))
+    (apply (intern (format "make-%s" struct-type)) arguments)))
 
 (provide 'lsp-struct)

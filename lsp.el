@@ -115,28 +115,6 @@ I use inode in case project directory gets renamed.")
 (defun lsp-array (&rest args)
   (apply #'vector args))
 
-(defun lsp-jsonify (obj)
-  (cond
-   ((listp obj) ; lsp-literal qua plist
-    obj)
-   ((vectorp obj)
-    (apply json-array-type
-           (seq-map #'lsp-jsonify obj)))
-   ((not (get (type-of obj) 'cl--class))
-    obj)
-   (t
-    (let* ((json-object-type 'plist)
-           (result (json-new-object))
-           (type (type-of obj))
-           (slots (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
-      (dolist (slot (mapcar (lambda (x) (symbol-name (car x))) slots))
-        (when-let ((getter (intern-soft (concat (symbol-name type) "-" slot)))
-                   (getter-p (fboundp getter))
-                   (value (funcall getter obj)))
-          (setq result (json-add-to-object
-                        result (lsp-unhyphenate slot t) (lsp-jsonify value)))))
-      (or result lsp-struct-empty)))))
-
 (defconst lsp-made-struct-client-capabilities
   (make-lsp-struct-client-capabilities
    :workspace (make-lsp-struct-workspace-client-capabilities
@@ -272,6 +250,7 @@ lsp/3.17/specification/#uri"
          (conn (make-instance
                 'jsonrpc-process-connection
                 :name name
+                :events-buffer (get-buffer-create (format " *%s events*" name))
                 :events-buffer-scrollback-size lsp-events-buffer-size
                 :notification-dispatcher #'lsp-handle-notification
                 :request-dispatcher #'lsp-handle-request
