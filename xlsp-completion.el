@@ -23,15 +23,16 @@
 
 ;;; Commentary:
 
-;; Emacs's completion story is one of reset maximization.
+;; Emacs's completion story is one of regret maximization.
 ;;
-;; Its completion model (try- and all-) actually came with Blandy's
-;; initial revision in 1991.  It received a facelift in 2008 but
-;; the bones were preserved.
+;; Its completion model, i.e., try- and all-, actually came nearly
+;; full-formed with Blandy's initial revision in 1991.  It received a
+;; facelift in 2008 but the bones remained largely intact.
 ;;
 ;; Nowadays, modern IDEs have completion wrapped up, but emacs must
-;; laboriously retrofit to Blandy's original ad hoc model any new
-;; completion feature.
+;; laboriously retrofit any new completion feature to Blandy's
+;; original ad hoc model, one which lacks async and is oblivious
+;; to Microsoft's Language Server Protocol.
 
 ;;; Code:
 
