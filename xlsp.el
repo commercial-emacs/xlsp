@@ -1,4 +1,4 @@
-;;; lsp.el --- Language Server Protocol client. -*- lexical-binding: t; -*-
+;;; xlsp.el --- Language Server Protocol client. -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -43,7 +43,7 @@
 (require 'xlsp-handle-request)
 (require 'xlsp-handle-notification)
 
-(defgroup lsp nil
+(defgroup xlsp nil
   "Language Server Protocol."
   :prefix "xlsp-"
   :group 'applications)
@@ -308,6 +308,6 @@ lsp/3.17/specification/#uri"
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
 
-(provide 'lsp)
+(provide 'xlsp)
 
-;;; lsp.el ends here
+;;; xlsp.el ends here

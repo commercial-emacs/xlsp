@@ -16,8 +16,8 @@ schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.js
             (princ \";; -*- lisp-data -*-\n\n\" (current-buffer))                \
             (pp schema (current-buffer))))))))"
 
-README.rst: README.in.rst lsp.el
-	grep ';;' lsp.el \
+README.rst: README.in.rst xlsp.el
+	grep ';;' xlsp.el \
 	  | awk '/;;;\s*Commentary/{within=1;next}/;;;\s*/{within=0}within' \
 	  | sed -e 's/^\s*;;*\s*//g' \
 	  | bash readme-sed.sh "COMMENTARY" README.in.rst > README.rst
@@ -34,7 +34,7 @@ microsoft:
 compile:
 	$(EMACS) -batch -L . \
           --eval "(setq byte-compile-error-on-warn t)" \
-	  -f batch-byte-compile lsp*.el ; \
+	  -f batch-byte-compile xlsp*.el ; \
 	  (ret=$$? ; rm *.elc && exit $$ret)
 
 .PHONY: test
