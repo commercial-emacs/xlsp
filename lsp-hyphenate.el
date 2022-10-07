@@ -1,4 +1,4 @@
-;;; lsp-hyphenate.el -*- lexical-binding: t; -*-
+;;; xlsp-hyphenate.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -23,16 +23,16 @@
 
 ;;; Commentary:
 
-;; Break out lsp-hyphenate for `make schema`.
+;; Break out xlsp-hyphenate for `make schema`.
 
 ;;; Code:
 
 (require 'cl-lib)
 
-(defvar lsp--hyphenate-data (make-hash-table :test #'equal)
-  "Every time you `lsp-hyphenate', make a backref to original camel.")
+(defvar xlsp--hyphenate-data (make-hash-table :test #'equal)
+  "Every time you `xlsp-hyphenate', make a backref to original camel.")
 
-(defun lsp-hyphenate (camel)
+(defun xlsp-hyphenate (camel)
   (let ((word "")
         case-fold-search lifo pc)
     (dolist (c (append camel nil))
@@ -62,15 +62,15 @@
     (let* ((fifo (reverse lifo))
            (result (mapconcat #'identity fifo "-")))
       (prog1 result
-        (puthash result camel lsp--hyphenate-data)))))
+        (puthash result camel xlsp--hyphenate-data)))))
 
-(defun lsp-unhyphenate (hyphenate &optional slot-p)
-  (when-let ((result (gethash hyphenate lsp--hyphenate-data)))
+(defun xlsp-unhyphenate (hyphenate &optional slot-p)
+  (when-let ((result (gethash hyphenate xlsp--hyphenate-data)))
     (if slot-p
         (concat (downcase (cl-subseq result 0 1))
                 (cl-subseq result 1))
       result)))
 
-(provide 'lsp-hyphenate)
+(provide 'xlsp-hyphenate)
 
-;;; lsp-hyphenate.el ends here
+;;; xlsp-hyphenate.el ends here

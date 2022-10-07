@@ -29,7 +29,7 @@
 ;;
 ;; (dir-locals-set-class-variables 'my-project-lsp
 ;;   '((python-mode
-;;      (lsp-workspace-configuration
+;;      (xlsp-workspace-configuration
 ;;       (:pylsp (:plugins (:jedi_completion (:include_params t :fuzzy t)
 ;;                          :pylint (:enabled :json-false)))))))
 ;;
@@ -37,175 +37,168 @@
 
 ;;; Code:
 
-(require 'json)
 (require 'jsonrpc)
 (require 'url-util)
 (require 'project)
-(require 'lsp-handle-request)
-(require 'lsp-handle-notification)
+(require 'xlsp-handle-request)
+(require 'xlsp-handle-notification)
 
 (defgroup lsp nil
   "Language Server Protocol."
-  :prefix "lsp-"
+  :prefix "xlsp-"
   :group 'applications)
 
-(defvar lsp--connections nil
+(defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . JSONRPC-PROCESS-CONNECTION).
 I use inode in case project directory gets renamed.")
 
-(defvar lsp--inode-data (make-hash-table)
-  "Every time you `lsp-inode', make a backref to original directory.")
+(defvar xlsp--inode-data (make-hash-table)
+  "Every time you `xlsp-inode', make a backref to original directory.")
 
-(defun lsp-inode (directory)
+(defun xlsp-inode (directory)
   (when-let ((inode (file-attribute-inode-number
                      (file-attributes (expand-file-name directory)))))
     (prog1 inode
-      (puthash inode directory lsp--inode-data))))
+      (puthash inode directory xlsp--inode-data))))
 
-(defmacro lsp-gv-connection (conn-key)
-  `(alist-get ,conn-key lsp--connections nil nil #'equal))
+(defmacro xlsp-gv-connection (conn-key)
+  `(alist-get ,conn-key xlsp--connections nil nil #'equal))
 
-(defmacro lsp-project-root (project)
+(defmacro xlsp-project-root (project)
   "`project-root' only exists in emacs-28"
   (if (fboundp 'project-root)
       `(project-root ,project)
     (with-suppressed-warnings ((obsolete project-roots))
       `(car (project-roots ,project)))))
 
-(defmacro with-lsp-connection (args buffer &rest body)
+(defmacro with-xlsp-connection (args buffer &rest body)
   (declare (indent 2))
   (cl-destructuring-bind (conn-key project-dir)
       args
     `(when-let ((mode (buffer-local-value 'major-mode ,buffer))
                 (file-name (buffer-file-name ,buffer))
                 (inode
-                 (lsp-inode (expand-file-name
+                 (xlsp-inode (expand-file-name
                              (if-let ((project (project-current nil file-name)))
-                                 (lsp-project-root project)
+                                 (xlsp-project-root project)
                                (if (file-directory-p file-name)
                                    file-name
                                  (file-name-directory file-name))))))
-                (,project-dir (gethash inode lsp--inode-data))
+                (,project-dir (gethash inode xlsp--inode-data))
                 (,conn-key (cons mode inode)))
        ,@body)))
 
-(defun lsp-connection-remove (buffer)
-  (with-lsp-connection (conn-key project-dir)
+(defun xlsp-connection-remove (buffer)
+  (with-xlsp-connection (conn-key project-dir)
       buffer
-    (when-let ((conn (lsp-gv-connection conn-key)))
+    (when-let ((conn (xlsp-gv-connection conn-key)))
       (jsonrpc-shutdown conn :cleanup))
-    (setq lsp--connections (assoc-delete-all conn-key lsp--connections))))
+    (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))))
 
-(defun lsp-connection-get (buffer)
-  (with-lsp-connection (conn-key project-dir)
+(defun xlsp-connection-get (buffer)
+  (with-xlsp-connection (conn-key project-dir)
       buffer
-    (or (lsp-gv-connection conn-key)
-        (setf (lsp-gv-connection conn-key) (lsp--connect buffer project-dir)))))
+    (or (xlsp-gv-connection conn-key)
+        (setf (xlsp-gv-connection conn-key) (xlsp--connect buffer project-dir)))))
 
-(defun lsp-connection-reset (buffer)
-  (lsp-connection-remove buffer)
-  (lsp-connection-get buffer))
+(defun xlsp-connection-reset (buffer)
+  (xlsp-connection-remove buffer)
+  (xlsp-connection-get buffer))
 
-(defun lsp--initialization-options (project-dir)
+(defun xlsp--initialization-options (project-dir)
   (ignore project-dir))
 
-(defun lsp-literal (&rest args)
-  (apply #'list args))
-
-(defun lsp-array (&rest args)
-  (apply #'vector args))
-
-(defconst lsp-made-struct-client-capabilities
-  (make-lsp-struct-client-capabilities
-   :workspace (make-lsp-struct-workspace-client-capabilities
-               :workspace-edit (make-lsp-struct-workspace-edit-client-capabilities
+(defconst xlsp-made-struct-client-capabilities
+  (make-xlsp-struct-client-capabilities
+   :workspace (make-xlsp-struct-workspace-client-capabilities
+               :workspace-edit (make-xlsp-struct-workspace-edit-client-capabilities
                                 :document-changes t)
                :configuration t
                :workspace-folders t)
-   :text-document (make-lsp-struct-text-document-client-capabilities
-                   :synchronization (make-lsp-struct-text-document-sync-client-capabilities
+   :text-document (make-xlsp-struct-text-document-client-capabilities
+                   :synchronization (make-xlsp-struct-text-document-sync-client-capabilities
                                      :will-save t
                                      :will-save-wait-until t
                                      :did-save t)
-                   :completion (make-lsp-struct-completion-client-capabilities
+                   :completion (make-xlsp-struct-completion-client-capabilities
                                 :completion-item
-                                (lsp-literal
+                                (xlsp-literal
                                  :snippetSupport :json-false
                                  :deprecatedSupport t
-                                 :tagSupport (lsp-literal
-                                              :valueSet (lsp-array 1)))
+                                 :tagSupport (xlsp-literal
+                                              :valueSet (xlsp-array 1)))
                                 :context-support t)
-                   :hover (make-lsp-struct-hover-client-capabilities
-                           :content-format (lsp-array lsp-markup-kind/plain-text
-                                                      lsp-markup-kind/markdown))
-                   :signature-help (make-lsp-struct-signature-help-client-capabilities
+                   :hover (make-xlsp-struct-hover-client-capabilities
+                           :content-format (xlsp-array xlsp-markup-kind/plain-text
+                                                      xlsp-markup-kind/markdown))
+                   :signature-help (make-xlsp-struct-signature-help-client-capabilities
                                     :signature-information
-                                    (lsp-literal
+                                    (xlsp-literal
                                      :parameterInformation
-                                     (lsp-literal :labelOffSupport t)
+                                     (xlsp-literal :labelOffSupport t)
                                      :activeParameterSupport t))
-                   :declaration (make-lsp-struct-declaration-client-capabilities
+                   :declaration (make-xlsp-struct-declaration-client-capabilities
                                  :link-support t)
-                   :definition (make-lsp-struct-definition-client-capabilities
+                   :definition (make-xlsp-struct-definition-client-capabilities
                                 :link-support t)
-                   :type-definition (make-lsp-struct-type-definition-client-capabilities
+                   :type-definition (make-xlsp-struct-type-definition-client-capabilities
                                      :link-support t)
-                   :implementation (make-lsp-struct-implementation-client-capabilities
+                   :implementation (make-xlsp-struct-implementation-client-capabilities
                                     :link-support t)
-                   :document-symbol (make-lsp-struct-document-symbol-client-capabilities
+                   :document-symbol (make-xlsp-struct-document-symbol-client-capabilities
                                      :hierarchical-document-symbol-support t
                                      :symbol-kind
-                                     (lsp-literal
+                                     (xlsp-literal
                                       :valueSet
                                       (apply
-                                       #'lsp-array
+                                       #'xlsp-array
                                        (mapcar
                                         (lambda (x)
                                           (symbol-value
                                            (intern-soft
-                                            (lsp-namespace x "lsp-symbol-kind"))))
+                                            (xlsp-namespace x "xlsp-symbol-kind"))))
                                         '("file" "module" "namespace" "package" "class"
                                           "method" "property" "field" "constructor"
                                           "enum" "interface" "function" "variable"
                                           "constant" "string" "number" "boolean" "array"
                                           "object" "key" "null" "enum-member" "struct"
                                           "event" "operator" "type-parameter")))))
-                   :code-action (make-lsp-struct-code-action-client-capabilities
+                   :code-action (make-xlsp-struct-code-action-client-capabilities
                                  :code-action-literal-support
-                                 (lsp-literal
+                                 (xlsp-literal
                                   :codeActionKind
-                                  (lsp-literal
+                                  (xlsp-literal
                                    :valueSet
                                    (apply
-                                    #'lsp-array
+                                    #'xlsp-array
                                     (mapcar
                                      (lambda (x)
                                        (symbol-value
                                         (intern-soft
-                                         (lsp-namespace x "lsp-code-action-kind"))))
+                                         (xlsp-namespace x "xlsp-code-action-kind"))))
                                      '("quick-fix" "refactor" "refactor-extract"
                                        "refactor-inline" "refactor-rewrite"
                                        "source" "source-organize-imports"))))))
-                   :publish-diagnostics (make-lsp-struct-publish-diagnostics-client-capabilities
+                   :publish-diagnostics (make-xlsp-struct-publish-diagnostics-client-capabilities
                                          :related-information :json-false
                                          :code-description-support :json-false
                                          :tag-support
-                                         (lsp-literal
+                                         (xlsp-literal
                                           :valueSet
                                           (apply
-                                           #'lsp-array
+                                           #'xlsp-array
                                            (mapcar
                                             (lambda (x)
                                               (symbol-value
                                                (intern-soft
-                                                (lsp-namespace x "lsp-diagnostic-tag"))))
+                                                (xlsp-namespace x "xlsp-diagnostic-tag"))))
                                             '("unnecessary" "deprecated"))))))))
 
-(defun lsp--capabilities (project-dir)
+(defun xlsp--capabilities (project-dir)
   (ignore project-dir)
-  lsp-made-struct-client-capabilities)
+  xlsp-made-struct-client-capabilities)
 
-(defcustom lsp-invocations
+(defcustom xlsp-invocations
   (quote ((c-mode . "clangd --header-insertion-decorators=0")
           (c++-mode . "clangd --header-insertion-decorators=0")
           (objc-mode . "clangd --header-insertion-decorators=0")))
@@ -214,12 +207,12 @@ If you need to set environment variables,
 try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   :type '(alist :key-type symbol :value-type string))
 
-(defcustom lsp-events-buffer-size (truncate 2e6)
+(defcustom xlsp-events-buffer-size (truncate 2e6)
   "Events buffer max size.  Zero for no buffer, nil for infinite."
   :type '(choice (const :tag "No limit" nil)
                  (integer :tag "Number of characters")))
 
-(defun lsp-urify (path)
+(defun xlsp-urify (path)
   "RFC3986, like all RFCs, are write-only.
 https://microsoft.github.io/language-server-protocol/specifications/\\
 lsp/3.17/specification/#uri"
@@ -227,33 +220,33 @@ lsp/3.17/specification/#uri"
     (aset url-path-allowed-chars ?: nil)
     (url-encode-url (concat "file://" (expand-file-name path)))))
 
-(defun lsp-message (format &rest args)
+(defun xlsp-message (format &rest args)
   "Message out with FORMAT with ARGS."
   (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time))))
     (apply #'message (concat lhs format) args)))
 
-(defun lsp--connect (buffer project-dir)
+(defun xlsp--connect (buffer project-dir)
   "Return existing or new jsonrpc-process-connection."
   (let* ((mode (buffer-local-value 'major-mode buffer))
          (name (format "%s/%s" mode (file-name-nondirectory
                                     (directory-file-name project-dir))))
          (initialize-params
-          (make-lsp-struct-initialize-params
+          (make-xlsp-struct-initialize-params
            :process-id (emacs-pid)
-           :initialization-options (lsp--initialization-options project-dir)
-           :capabilities (lsp--capabilities project-dir)
-           :workspace-folders (lsp-array
-                               (make-lsp-struct-workspace-folder
-                                :uri (lsp-urify project-dir)
+           :initialization-options (xlsp--initialization-options project-dir)
+           :capabilities (xlsp--capabilities project-dir)
+           :workspace-folders (xlsp-array
+                               (make-xlsp-struct-workspace-folder
+                                :uri (xlsp-urify project-dir)
                                 :name project-dir))))
-         (command (or (alist-get mode lsp-invocations) "false"))
+         (command (or (alist-get mode xlsp-invocations) "false"))
          (conn (make-instance
                 'jsonrpc-process-connection
                 :name name
                 :events-buffer (get-buffer-create (format " *%s events*" name))
-                :events-buffer-scrollback-size lsp-events-buffer-size
-                :notification-dispatcher #'lsp-handle-notification
-                :request-dispatcher #'lsp-handle-request
+                :events-buffer-scrollback-size xlsp-events-buffer-size
+                :notification-dispatcher #'xlsp-handle-notification
+                :request-dispatcher #'xlsp-handle-request
                 :process (make-process
                           :name name
                           :command (split-string command)
@@ -262,25 +255,25 @@ lsp/3.17/specification/#uri"
                           :noquery t
                           :stderr (get-buffer-create (format "*%s stderr*" name))
                           :file-handler t))))
-    (lsp-message "%s executing: %s" name command)
+    (xlsp-message "%s executing: %s" name command)
     (condition-case-unless-debug err
         (jsonrpc-async-request
          conn
          'initialize
-         (lsp-jsonify initialize-params)
+         (xlsp-jsonify initialize-params)
          :success-fn (apply-partially
                       (lambda (buffer* _result)
                         "RESULT is a plist."
                         (jsonrpc-notify
                          conn 'initialized
-                         (lsp-jsonify
-                          (make-lsp-struct-initialized-params))) ;; ack
+                         (xlsp-jsonify
+                          (make-xlsp-struct-initialized-params))) ;; ack
                         (jsonrpc-notify
                          conn 'textDocument/didOpen
-                         (lsp-jsonify
-                          (make-lsp-struct-did-open-text-document-params
-                           :text-document (make-lsp-struct-text-document-item
-                                           :uri (lsp-urify (buffer-file-name buffer*))
+                         (xlsp-jsonify
+                          (make-xlsp-struct-did-open-text-document-params
+                           :text-document (make-xlsp-struct-text-document-item
+                                           :uri (xlsp-urify (buffer-file-name buffer*))
                                            :language-id ""
                                            :version 0
                                            :text (with-current-buffer buffer*
@@ -289,31 +282,31 @@ lsp/3.17/specification/#uri"
                                                      (buffer-substring-no-properties
                                                       (point-min) (point-max))))))))
                         (when-let ((settings
-                                    (bound-and-true-p lsp-workspace-configuration)))
+                                    (bound-and-true-p xlsp-workspace-configuration)))
                           (jsonrpc-notify
                            conn 'workspace/didChangeConfiguration
-                           (lsp-jsonify
-                            (make-lsp-struct-did-change-configuration-params
+                           (xlsp-jsonify
+                            (make-xlsp-struct-did-change-configuration-params
                              :settings settings)))))
                       buffer)
          :error-fn (apply-partially
                     (lambda (buffer* error)
-                      (lsp-message "%s %s (%s)" name (plist-get error :message)
+                      (xlsp-message "%s %s (%s)" name (plist-get error :message)
                                    (plist-get error :code))
-                      (lsp-connection-remove buffer*))
+                      (xlsp-connection-remove buffer*))
                     buffer)
          :timeout 10
          :timeout-fn (apply-partially
                       (lambda (buffer*)
-                        (lsp-message "%s timed out" name)
-                        (lsp-connection-remove buffer*))
+                        (xlsp-message "%s timed out" name)
+                        (xlsp-connection-remove buffer*))
                       buffer))
       (error (jsonrpc-shutdown conn :cleanup)
              (setq conn nil)
              (signal (car err) (cdr err))))
     conn))
 
-(put 'lsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
+(put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
 
 (provide 'lsp)
 

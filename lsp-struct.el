@@ -1,4 +1,4 @@
-;;; lsp-struct.el -*- lexical-binding: t; -*-
+;;; xlsp-struct.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -25,56 +25,57 @@
 
 ;;; Code:
 
+(require 'json)
 (eval-and-compile
-  (require 'lsp-hyphenate)
-  (defconst lsp-requests (with-temp-buffer
+  (require 'xlsp-hyphenate)
+  (defconst xlsp-requests (with-temp-buffer
                            (save-excursion (insert-file-contents "_requests.el"))
                            (read (current-buffer))))
-  (defconst lsp-notifications (with-temp-buffer
+  (defconst xlsp-notifications (with-temp-buffer
                                 (save-excursion (insert-file-contents "_notifications.el"))
                                 (read (current-buffer))))
-  (defconst lsp-structures (with-temp-buffer
+  (defconst xlsp-structures (with-temp-buffer
                              (save-excursion (insert-file-contents "_structures.el"))
                              (read (current-buffer))))
-  (defconst lsp-enumerations (with-temp-buffer
+  (defconst xlsp-enumerations (with-temp-buffer
                                (save-excursion (insert-file-contents "_enumerations.el"))
                                (read (current-buffer))))
 
-  (defun lsp-structure (alist)
+  (defun xlsp-structure (alist)
     (let-alist alist
-      (concat "lsp-struct-" (lsp-hyphenate .name))))
+      (concat "xlsp-struct-" (xlsp-hyphenate .name))))
 
-  (defun lsp-request (alist)
+  (defun xlsp-request (alist)
     (let-alist alist
-      (concat "lsp-request-" (lsp-hyphenate .method))))
+      (concat "xlsp-request-" (xlsp-hyphenate .method))))
 
-  (defun lsp-notification (alist)
+  (defun xlsp-notification (alist)
     (let-alist alist
-      (concat "lsp-notification-" (lsp-hyphenate .method))))
+      (concat "xlsp-notification-" (xlsp-hyphenate .method))))
 
-  (defun lsp-enumeration (alist)
+  (defun xlsp-enumeration (alist)
     (let-alist alist
-      (concat "lsp-" (lsp-hyphenate .name))))
+      (concat "xlsp-" (xlsp-hyphenate .name))))
 
-  (defun lsp-structure-type (alist)
+  (defun xlsp-structure-type (alist)
     (let-alist alist
       (cond ((equal .kind "reference")
-             (intern (concat "lsp-struct-" (lsp-hyphenate .name))))
+             (intern (concat "xlsp-struct-" (xlsp-hyphenate .name))))
             (.items
-             (lsp-structure-type (aref .items 0)))
-            (t (make-symbol (lsp-hyphenate (or .name .kind)))))))
+             (xlsp-structure-type (aref .items 0)))
+            (t (make-symbol (xlsp-hyphenate (or .name .kind)))))))
 
-  (defun lsp-property-type (alist)
+  (defun xlsp-property-type (alist)
     "Supposedly SLOT-OPTION :type only used for documentation."
     (let-alist alist
       (if (equal "array" .type.kind)
-          (list 'list-of (lsp-structure-type .type.element))
-        (lsp-structure-type .type))))
+          (list 'list-of (xlsp-structure-type .type.element))
+        (xlsp-structure-type .type))))
 
-  (defun lsp-namespace (variable namespace)
-    (concat (lsp-hyphenate namespace) "/" (lsp-hyphenate variable)))
+  (defun xlsp-namespace (variable namespace)
+    (concat (xlsp-hyphenate namespace) "/" (xlsp-hyphenate variable)))
 
-  (defun lsp-top-sort (structures)
+  (defun xlsp-top-sort (structures)
     "Return STRUCTURES such that a structure's dependency precedes it."
     (let (seen alist)
       (dotimes (i (length structures))
@@ -115,28 +116,28 @@
    (lambda (entry)
      (let-alist entry
        (eval
-        `(cl-defstruct (,(intern (lsp-structure entry))
+        `(cl-defstruct (,(intern (xlsp-structure entry))
                         ,@(when-let ((extends .extends))
                             `((:include
-                               ;; `lsp-structure-type' returns an intern-less
+                               ;; `xlsp-structure-type' returns an intern-less
                                ;; `make-symbol'.
                                ,(intern (symbol-name
-                                         (lsp-structure-type (aref extends 0)))))))
+                                         (xlsp-structure-type (aref extends 0)))))))
                         (:copier nil))
            ,@(when (stringp .documentation) (list .documentation))
            ,@(cl-mapcan #'identity
                         (seq-map
                          (lambda (parent)
-                           (when-let ((type (intern-soft (lsp-structure parent))))
+                           (when-let ((type (intern-soft (xlsp-structure parent))))
                              (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
                          (seq-drop .extends 1)))
            ,@(seq-map
               (lambda (alist)
                 (let-alist alist
-                  `(,(make-symbol (lsp-hyphenate .name))
+                  `(,(make-symbol (xlsp-hyphenate .name))
                     nil
                     :read-only t
-                    :type ,(lsp-property-type alist)
+                    :type ,(xlsp-property-type alist)
                     ,@(when (or .optional .documentation)
                         (list :documentation
                               (string-trim-right
@@ -146,78 +147,84 @@
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "RenameOptions"
    ;;                                 (alist-get 'name x)))
-   ;;              lsp-structures))
-   (lsp-top-sort lsp-structures))
+   ;;              xlsp-structures))
+   (xlsp-top-sort xlsp-structures))
 
   (seq-map
    (lambda (entry)
      (let-alist entry
-       (let ((namespace (lsp-enumeration entry)))
+       (let ((namespace (xlsp-enumeration entry)))
          (eval
           `(progn
              ,@(seq-map
                 (lambda (entry)
                   (let-alist entry
-                    `(defconst ,(intern (lsp-namespace .name namespace))
+                    `(defconst ,(intern (xlsp-namespace .name namespace))
                        ,.value ,.documentation)))
                 .values))))))
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "MarkupKind" (alist-get 'name x)))
-   ;;              lsp-enumerations))
-   lsp-enumerations)
+   ;;              xlsp-enumerations))
+   xlsp-enumerations)
 
   (seq-map
    (lambda (entry)
      (let-alist entry
        (eval
-        `(cl-defstruct (,(intern (lsp-request entry))
+        `(cl-defstruct (,(intern (xlsp-request entry))
                         (:copier nil))
            ,@(when (stringp .documentation) (list .documentation))
            (params
             nil
             :read-only t
-            :type ,(lsp-structure-type .params))
+            :type ,(xlsp-structure-type .params))
            ,@(when .registrationOptions
                `((registration-options
                   nil
                   :read-only t
-                  :type ,(lsp-structure-type .registrationOptions))))))))
+                  :type ,(xlsp-structure-type .registrationOptions))))))))
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "workspace/executeCommand" (alist-get 'method x)))
-   ;;              lsp-requests))
-   lsp-requests)
+   ;;              xlsp-requests))
+   xlsp-requests)
 
   (seq-map
    (lambda (entry)
      (let-alist entry
        (eval
-        `(cl-defstruct (,(intern (lsp-notification entry))
+        `(cl-defstruct (,(intern (xlsp-notification entry))
                         (:copier nil))
            ,@(when (stringp .documentation) (list .documentation))
            (params
             nil
             :read-only t
-            :type ,(lsp-structure-type .params))
+            :type ,(xlsp-structure-type .params))
            ,@(when .registrationOptions
                `((registration-options
                   nil
                   :read-only t
-                  :type ,(lsp-structure-type .registrationOptions))))))))
+                  :type ,(xlsp-structure-type .registrationOptions))))))))
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "telemetry/event"
    ;;                                 (alist-get 'method x)))
-   ;;              lsp-notifications))
-   lsp-notifications))
+   ;;              xlsp-notifications))
+   xlsp-notifications))
 
-(defconst lsp-struct-empty (make-hash-table :size 1))
+(defconst xlsp-struct-empty (make-hash-table :size 1))
 
-(defun lsp-jsonify (obj)
-  "Go from lsp-struct to json-object-type (plist)."
+(defun xlsp-literal (&rest args)
+  (apply #'list args))
+
+(defun xlsp-array (&rest args)
+  (apply #'vector args))
+
+(defun xlsp-jsonify (obj)
+  "Go from xlsp-struct to json-object-type (plist)."
   (cond
-   ((listp obj) ; lsp-literal qua plist
+   ((listp obj) ; xlsp-literal qua plist
     obj)
    ((vectorp obj)
-    (apply json-array-type (seq-map #'lsp-jsonify obj)))
+    (apply json-array-type (seq-map #'xlsp-jsonify obj)))
    ((not (get (type-of obj) 'cl--class))
     obj)
    (t
@@ -230,32 +237,32 @@
                    (getter-p (fboundp getter))
                    (value (funcall getter obj)))
           (setq result (json-add-to-object
-                        result (lsp-unhyphenate slot t) (lsp-jsonify value)))))
-      (or result lsp-struct-empty)))))
+                        result (xlsp-unhyphenate slot t) (xlsp-jsonify value)))))
+      (or result xlsp-struct-empty)))))
 
-(defun lsp-unjsonify (struct-type json)
-  "Go from json-object-type (plist) to lsp-struct."
+(defun xlsp-unjsonify (struct-type json)
+  "Go from json-object-type (plist) to xlsp-struct."
   (let ((json-object-type 'plist)
         (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type)))
         arguments)
     (dolist (slot slots)
       (cl-destructuring-bind (sym _ &key type &allow-other-keys)
           slot
-        (when-let ((keyword (intern (concat ":" (lsp-hyphenate (symbol-name sym)))))
+        (when-let ((keyword (intern (concat ":" (xlsp-hyphenate (symbol-name sym)))))
                    (value (plist-get json keyword)))
           (setq arguments
                 (nconc arguments
                        (list keyword
                              (pcase type
                                (`(list-of ,property-type)
-                                (apply #'lsp-array
+                                (apply #'xlsp-array
                                        (seq-map
                                         (lambda (elem)
-                                          (lsp-unjsonify property-type elem))
+                                          (xlsp-unjsonify property-type elem))
                                         value)))
                                ((pred (lambda (type) (get type 'cl--class)))
-                                (lsp-unjsonify type value))
+                                (xlsp-unjsonify type value))
                                (_ value))))))))
     (apply (intern (format "make-%s" struct-type)) arguments)))
 
-(provide 'lsp-struct)
+(provide 'xlsp-struct)

@@ -1,4 +1,4 @@
-;;; lsp-handle-notification.el -*- lexical-binding: t; -*-
+;;; xlsp-handle-notification.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -25,26 +25,28 @@
 
 ;;; Code:
 
-(require 'lsp-struct)
+(require 'xlsp-struct)
 
-(defun lsp-notification-param-type (method)
+(defun xlsp-notification-param-type (method)
   (let* ((struct-type
           (intern
-           (lsp-notification
-            (list (cons 'method (lsp-hyphenate (symbol-name method)))))))
+           (xlsp-notification
+            (list (cons 'method (xlsp-hyphenate (symbol-name method)))))))
          (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type))))
     (cl-destructuring-bind (_sym _default &key type &allow-other-keys)
         (assoc 'params slots)
       type)))
 
-(cl-defgeneric lsp-handle-notification (conn method params))
+(cl-defgeneric xlsp-handle-notification (conn method params))
 
-(cl-defmethod lsp-handle-notification (_conn _method _params)
+(cl-defmethod xlsp-handle-notification (_conn _method _params)
   "Handle unknown.")
 
-(cl-defmethod lsp-handle-notification
+(cl-defmethod xlsp-handle-notification
   (_conn (method (eql textDocument/publishDiagnostics)) params)
   "Handle it."
-  (lsp-unjsonify (lsp-notification-param-type method) params))
+  (let ((struct-params
+         (xlsp-unjsonify (xlsp-notification-param-type method) params)))
+    (ignore struct-params)))
 
-(provide 'lsp-handle-notification)
+(provide 'xlsp-handle-notification)

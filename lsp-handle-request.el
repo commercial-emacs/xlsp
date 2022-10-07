@@ -1,4 +1,4 @@
-;;; lsp-handle-request.el -*- lexical-binding: t; -*-
+;;; xlsp-handle-request.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -25,8 +25,8 @@
 
 ;;; Code:
 
-(require 'lsp-struct)
+(require 'xlsp-struct)
 
-(cl-defgeneric lsp-handle-request (conn method params))
+(cl-defgeneric xlsp-handle-request (conn method params))
 
-(provide 'lsp-handle-request)
+(provide 'xlsp-handle-request)
