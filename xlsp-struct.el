@@ -27,7 +27,7 @@
 
 (require 'json)
 (eval-and-compile
-  (require 'xlsp-hyphenate)
+  (require 'xlsp-utils)
   (defconst xlsp-requests (with-temp-buffer
                            (save-excursion (insert-file-contents "_requests.el"))
                            (read (current-buffer))))
@@ -167,9 +167,16 @@
    (lambda (entry)
      (let-alist entry
        (eval
+        `(defconst ,(intern (xlsp-request entry)) ',(intern .method)))
+       (eval
         `(cl-defstruct (,(intern (xlsp-request entry))
                         (:copier nil))
-           ,@(when (stringp .documentation) (list .documentation))
+           ,@(let ((doc (string-trim-left
+                         (concat (or .documentation "")
+                                 (if .messageDirection
+                                     (concat " (" .messageDirection ")")
+                                   "")))))
+               (unless (zerop (length doc)) (list doc)))
            (params
             nil
             :read-only t
@@ -188,9 +195,16 @@
    (lambda (entry)
      (let-alist entry
        (eval
+        `(defconst ,(intern (xlsp-notification entry)) ',(intern .method)))
+       (eval
         `(cl-defstruct (,(intern (xlsp-notification entry))
                         (:copier nil))
-           ,@(when (stringp .documentation) (list .documentation))
+           ,@(let ((doc (string-trim-left
+                         (concat (or .documentation "")
+                                 (if .messageDirection
+                                     (concat " (" .messageDirection ")")
+                                   "")))))
+               (unless (zerop (length doc)) (list doc)))
            (params
             nil
             :read-only t
@@ -238,31 +252,30 @@
 
 (defun xlsp-unjsonify (struct-type json)
   "Go from json-object-type (plist) to xlsp-struct."
-  (let ((json-object-type 'plist)
-        (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type)))
-        arguments)
-    (dolist (slot slots)
-      (cl-destructuring-bind (sym _ &key type &allow-other-keys)
-          slot
-        (when-let ((our-kw (intern (concat ":" (symbol-name sym))))
-                   (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
-                                                                   :as-slot))))
-                   (value (plist-get json their-kw)))
-          (setq arguments
-                (nconc arguments
-                       (list our-kw
-                             (pcase type
-                               (`(list-of ,property-type)
-                                (apply #'xlsp-array
-                                       (seq-map
-                                        (lambda (elem)
-                                          (if (get property-type 'cl--class)
-                                              (xlsp-unjsonify property-type elem)
-                                            elem))
-                                        value)))
-                               ((pred (lambda (type) (get type 'cl--class)))
-                                (xlsp-unjsonify type value))
-                               (_ value))))))))
-    (apply (intern (format "make-%s" struct-type)) arguments)))
+  (if (not (get struct-type 'cl--class))
+      (unless (eq json-false json)
+        json)
+    (let ((json-object-type 'plist)
+          (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type)))
+          arguments)
+      (dolist (slot slots)
+        (cl-destructuring-bind (sym _ &key type &allow-other-keys)
+            slot
+          (when-let ((our-kw (intern (concat ":" (symbol-name sym))))
+                     (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
+                                                                     :as-slot))))
+                     (value (plist-get json their-kw)))
+            (setq arguments
+                  (nconc arguments
+                         (list our-kw
+                               (pcase type
+                                 (`(list-of ,property-type)
+                                  (apply #'xlsp-array
+                                         (seq-map
+                                          (lambda (elem)
+                                            (xlsp-unjsonify property-type elem))
+                                          value)))
+                                 (_ (xlsp-unjsonify type value)))))))))
+      (apply (intern (format "make-%s" struct-type)) arguments))))
 
 (provide 'xlsp-struct)

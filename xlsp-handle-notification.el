@@ -25,6 +25,7 @@
 
 ;;; Code:
 
+(require 'xlsp-utils)
 (require 'xlsp-struct)
 
 (defun xlsp-notification-param-type (method)

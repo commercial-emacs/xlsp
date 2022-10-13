@@ -23,6 +23,20 @@
 
 ;;; Commentary:
 
+;; The "x" in "xlsp" is merely a differentiator, just as the "x" in
+;; "xemacs" had been (contrary to the popular misconception that it
+;; referenced X11).
+;;
+;; Emacs's completion model "capf" came with Blandy's initial revision in
+;; 1991.  It received a facelift in 2008 but the bones remained
+;; largely intact.
+;;
+;; Preservationists laboriously retrofit any new feature to the capf
+;; model, which lacks async and couldn't have foreseen Microsoft's
+;; Language Server Protocol (LSP).  In particular, capf keys off a
+;; client-determined prefix, whilst LSP's notion of the prefix
+;; originates from the server.
+
 ;; Loitering .dir-locals.el files are a pain in the tuchus.
 ;; If project-specific config is a must, we recommend this pain in
 ;; your .emacs instead:
@@ -37,10 +51,7 @@
 
 ;;; Code:
 
-(require 'jsonrpc)
-(require 'url-util)
 (require 'project)
-(require 'xlsp-completion)
 (require 'xlsp-handle-request)
 (require 'xlsp-handle-notification)
 
@@ -99,13 +110,22 @@ I use inode in case project directory gets renamed.")
       buffer
     (when-let ((conn (xlsp-gv-connection conn-key)))
       (jsonrpc-shutdown conn :cleanup))
+    ;; Was added in success-fn.
+    (remove-hook 'find-file-hook (apply-partially #'xlsp-find-file-hook conn-key))
     (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))))
+
+(defun xlsp-find-file-hook (conn-key*)
+  (with-xlsp-connection (conn-key project-dir)
+      (current-buffer)
+    (when (equal conn-key conn-key*)
+      (message "hey i pened %S %S" conn-key project-dir))))
 
 (defun xlsp-connection-get (buffer)
   (with-xlsp-connection (conn-key project-dir)
       buffer
     (or (xlsp-gv-connection conn-key)
-        (setf (xlsp-gv-connection conn-key) (xlsp--connect buffer project-dir)))))
+        (setf (xlsp-gv-connection conn-key)
+              (xlsp--connect buffer project-dir)))))
 
 (defun xlsp-connection-reset (buffer)
   (xlsp-connection-remove buffer)
@@ -123,8 +143,6 @@ I use inode in case project directory gets renamed.")
                :workspace-folders t)
    :text-document (make-xlsp-struct-text-document-client-capabilities
                    :synchronization (make-xlsp-struct-text-document-sync-client-capabilities
-                                     :will-save t
-                                     :will-save-wait-until t
                                      :did-save t)
                    :completion (make-xlsp-struct-completion-client-capabilities)
                    :hover (make-xlsp-struct-hover-client-capabilities
@@ -193,6 +211,43 @@ I use inode in case project directory gets renamed.")
                                                 (xlsp-namespace x "xlsp-diagnostic-tag"))))
                                             '("unnecessary" "deprecated"))))))))
 
+(defun xlsp-completion-in-region (buffer beg end)
+  "No-frills minibuffer completion, like `lisp-complete-symbol'."
+  (interactive (cons (current-buffer)
+	             (or (when-let ((c (bounds-of-thing-at-point 'symbol)))
+                           (list (car c) (cdr c)))
+                         (list (point) (min (point-max) (1+ (point)))))))
+  (when-let ((candidates (xlsp-completion-salvo buffer beg)))
+    (completion-in-region beg end candidates)))
+
+(defun xlsp-position (buffer pos)
+  "Return cons pair of LSP-space zero-indexed line and character offset.
+PositionEncodingKind currently disregarded."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char pos)
+      (save-restriction
+        (widen)
+        (let ((utf-16 (encode-coding-region (line-beginning-position)
+                                            (point) 'utf-16 t)))
+          (cons (1- (line-number-at-pos))
+                (1- (/ (length utf-16) 2))))))))
+
+(defun xlsp-completion-salvo (buffer pos)
+  "One-shot learning."
+  (let ((conn (xlsp-connection-get buffer))
+        (params (make-xlsp-struct-completion-params
+                 :text-document (make-xlsp-struct-text-document-identifier
+                                 :uri (xlsp-urify (buffer-file-name buffer)))
+                 :position (let ((send-pos (xlsp-position buffer pos)))
+                             (make-xlsp-struct-position
+                              :line (car send-pos)
+                              :character (cdr send-pos)))
+                 :context (make-xlsp-struct-completion-context
+                           :trigger-kind xlsp-completion-trigger-kind/invoked))))
+    (jsonrpc-request
+     conn xlsp-request-text-document/completion (xlsp-jsonify params) :deferred t)))
+
 (defun xlsp--capabilities (project-dir)
   (ignore project-dir)
   xlsp-made-struct-client-capabilities)
@@ -211,18 +266,19 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   :type '(choice (const :tag "No limit" nil)
                  (integer :tag "Number of characters")))
 
-(defun xlsp-urify (path)
-  "RFC3986, like all RFCs, are write-only.
-https://microsoft.github.io/language-server-protocol/specifications/\\
-lsp/3.17/specification/#uri"
-  (let ((url-path-allowed-chars (copy-sequence url-path-allowed-chars)))
-    (aset url-path-allowed-chars ?: nil)
-    (url-encode-url (concat "file://" (expand-file-name path)))))
-
 (defun xlsp-message (format &rest args)
   "Message out with FORMAT with ARGS."
   (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time))))
     (apply #'message (concat lhs format) args)))
+
+(defmacro xlsp-capability (conn &rest methods)
+  (declare (indent defun))
+  `(when-let ((result (oref ,conn capabilities)))
+     (catch 'done
+       (dolist (method ',methods)
+         (setq result (funcall method result))
+         (unless result (throw 'done result))))
+     result))
 
 (defun xlsp--connect (buffer project-dir)
   "Return existing or new xlsp-connection."
@@ -254,6 +310,9 @@ lsp/3.17/specification/#uri"
                     :events-buffer-scrollback-size xlsp-events-buffer-size
                     :notification-dispatcher #'xlsp-handle-notification
                     :request-dispatcher #'xlsp-handle-request
+                    ;; destructor callback for `jsonrpc--process-sentinel'
+                    :on-shutdown (lambda (_conn)
+                                   (xlsp-connection-remove buffer))
                     :process process)
                  (error (delete-process process)
                         (signal (car err) (cdr err))))))
@@ -268,54 +327,67 @@ lsp/3.17/specification/#uri"
     (condition-case err
         (jsonrpc-async-request
          conn
-         'initialize
+         xlsp-request-initialize
          (xlsp-jsonify initialize-params)
-         :success-fn (apply-partially
-                      (lambda (buffer* result-plist)
-                        (let ((result (xlsp-unjsonify 'xlsp-struct-initialize-result
-                                                      result-plist)))
-                          (oset conn ready-p t)
-                          (oset conn capabilities
-                                (xlsp-struct-initialize-result-capabilities result))
-                          (oset conn server-info
-                                (xlsp-struct-initialize-result-server-info result))
-                          (jsonrpc-notify
-                           conn 'initialized
-                           (xlsp-jsonify
-                            (make-xlsp-struct-initialized-params))) ;; ack
-                          (jsonrpc-notify
-                           conn 'textDocument/didOpen
-                           (xlsp-jsonify
-                            (make-xlsp-struct-did-open-text-document-params
-                             :text-document (make-xlsp-struct-text-document-item
-                                             :uri (xlsp-urify (buffer-file-name buffer*))
-                                             :language-id ""
-                                             :version 0
-                                             :text (with-current-buffer buffer*
-                                                     (save-restriction
-                                                       (widen)
-                                                       (buffer-substring-no-properties
-                                                        (point-min) (point-max))))))))
-                          (when-let ((settings
-                                      (bound-and-true-p xlsp-workspace-configuration)))
-                            (jsonrpc-notify
-                             conn 'workspace/didChangeConfiguration
-                             (xlsp-jsonify
-                              (make-xlsp-struct-did-change-configuration-params
-                               :settings settings))))))
-                      buffer)
-         :error-fn (apply-partially
-                    (lambda (buffer* error)
-                      (xlsp-message "%s %s (%s)" name (plist-get error :message)
-                                   (plist-get error :code))
-                      (xlsp-connection-remove buffer*))
-                    buffer)
-         :timeout 10
-         :timeout-fn (apply-partially
-                      (lambda (buffer*)
-                        (xlsp-message "%s timed out" name)
-                        (xlsp-connection-remove buffer*))
-                      buffer))
+         :success-fn
+         (apply-partially
+          (cl-function
+           (lambda (buffer* result-plist
+                    &aux (result (xlsp-unjsonify 'xlsp-struct-initialize-result
+                                                 result-plist)))
+             (oset conn ready-p t)
+             (oset conn capabilities
+                   (xlsp-struct-initialize-result-capabilities result))
+             (oset conn server-info
+                   (xlsp-struct-initialize-result-server-info result))
+             (with-xlsp-connection (conn-key project-dir)
+                 buffer*
+               (when (xlsp-capability conn
+                       xlsp-struct-server-capabilities-text-document-sync
+                       xlsp-struct-text-document-sync-options-open-close)
+                 (add-hook 'find-file-hook
+                           (apply-partially #'xlsp-find-file-hook conn-key))))
+             (with-current-buffer buffer*
+               (xlsp-toggle-hooks conn))
+             (jsonrpc-notify
+              conn xlsp-notification-initialized
+              (xlsp-jsonify (make-xlsp-struct-initialized-params))) ;; ack
+             (jsonrpc-notify
+              conn xlsp-notification-text-document/did-open
+              (xlsp-jsonify
+               (make-xlsp-struct-did-open-text-document-params
+                :text-document (make-xlsp-struct-text-document-item
+                                :uri (xlsp-urify (buffer-file-name buffer*))
+                                :language-id ""
+                                :version 0
+                                :text (with-current-buffer buffer*
+                                        (save-restriction
+                                          (widen)
+                                          (buffer-substring-no-properties
+                                           (point-min) (point-max))))))))
+             (when-let ((settings
+                         (bound-and-true-p xlsp-workspace-configuration)))
+               (jsonrpc-notify
+                conn xlsp-notification-workspace/did-change-configuration
+                (xlsp-jsonify
+                 (make-xlsp-struct-did-change-configuration-params
+                  :settings settings))))))
+          buffer)
+         :error-fn
+         (apply-partially
+          (lambda (buffer* error)
+            (xlsp-message "%s %s (%s)" name (plist-get error :message)
+                          (plist-get error :code))
+            (xlsp-connection-remove buffer*))
+          buffer)
+         :timeout
+         10
+         :timeout-fn
+         (apply-partially
+          (lambda (buffer*)
+            (xlsp-message "%s timed out" name)
+            (xlsp-connection-remove buffer*))
+          buffer))
       (error (jsonrpc-shutdown conn :cleanup)
              (setq conn nil)
              (signal (car err) (cdr err))))
@@ -334,92 +406,151 @@ lsp/3.17/specification/#uri"
   (version 0 :type integer)
   (events nil :type (list-of xlsp-literal)))
 
-(defun xlsp-synchronize-closure ()
-  (or (bound-and-true-p xlsp--synchronize-closure)
-      (set (make-local-variable 'xlsp--synchronize-closure)
-           (apply-partially
-            (cl-function
-             (lambda (synchronize* &key cumulate send &allow-other-keys)
-               "SYNCHRONIZE* is naturally thread unsafe state."
-               (when cumulate
-                 (push cumulate (xlsp-struct-synchronize-events synchronize*))
-                 (cl-incf (xlsp-struct-synchronize-version synchronize*)))
-               (when send
-                 (make-xlsp-struct-did-change-text-document-params
-                  :text-document
-                  (make-xlsp-struct-versioned-text-document-identifier
-                   :uri (xlsp-urify
-                         (buffer-file-name
-                          (xlsp-struct-synchronize-buffer synchronize*)))
-                   :version (xlsp-struct-synchronize-version synchronize*))
-                  :content-changes
-                  (prog1 (nreverse
-                          (copy-sequence
-                           (xlsp-struct-synchronize-events synchronize*)))
-                    ;; Events sent; clear for next batch.
-                    (setf (xlsp-struct-synchronize-events synchronize*) nil))))))
-            (make-xlsp-struct-synchronize :buffer (current-buffer))))))
+(defmacro xlsp-get-closure (probe-p private expr)
+  (declare (indent defun))
+  `(or (bound-and-true-p ,private)
+       (unless ,probe-p
+         (set (make-local-variable ',private) ,expr))))
 
-(defun xlsp-will-save-text-document ()
-  (or (bound-and-true-p xlsp--will-save-text-document)
-      (set (make-local-variable 'xlsp--will-save-text-document)
-           (apply-partially
-            (lambda ()
-              )))))
+(eval-when-compile
+  (when (< emacs-major-version 28)
+    (defvar xlsp--synchronize-closure)
+    (defvar xlsp--did-change-text-document)
+    (defvar xlsp--did-save-text-document)))
 
-(defun xlsp-did-save-text-document ()
-  (or (bound-and-true-p xlsp--did-save-text-document)
-      (set (make-local-variable 'xlsp--did-save-text-document)
-           (apply-partially
-            (lambda ()
-              )))))
-
-(defun xlsp-did-change-text-document ()
-  (or (bound-and-true-p xlsp--did-change-text-document)
-      (set (make-local-variable 'xlsp--did-change-text-document)
-           (apply-partially
-            (lambda (before-state* beg end &optional deleted)
-              "BEFORE-STATE* is naturally thread unsafe."
-              (cl-flet ((get-row-col (pos)
-                          (let ((send-pos
-                                 (with-temp-buffer
-                                   (save-excursion
-                                     (insert (alist-get 'snippet before-state*)))
-                                   (xlsp-completion-position
-                                    (current-buffer)
-                                    (min pos (point-max))))))
-                            (make-xlsp-struct-position
-                             :line (+ (alist-get 'line-offset before-state*)
-                                      (car send-pos))
-                             :character (cdr send-pos)))))
-                (if (not deleted)
-                    ;; In `before-change-functions'
-                    (save-excursion
-                      (goto-char beg)
+(defun xlsp-synchronize-closure (&optional probe-p)
+  (xlsp-get-closure
+    probe-p
+    xlsp--synchronize-closure
+    (apply-partially
+     (cl-function
+      (lambda (synchronize* &key cumulate send save &allow-other-keys)
+        "SYNCHRONIZE* is naturally thread unsafe state."
+        (when cumulate
+          (push cumulate (xlsp-struct-synchronize-events synchronize*))
+          (cl-incf (xlsp-struct-synchronize-version synchronize*)))
+        (when send
+          (when-let ((conn (xlsp-connection-get
+                            (xlsp-struct-synchronize-buffer synchronize*)))
+                     (kind (xlsp-capability conn
+                             xlsp-struct-server-capabilities-text-document-sync
+                             xlsp-struct-text-document-sync-options-change)))
+            (jsonrpc-notify
+             conn
+             xlsp-notification-text-document/did-change
+             (make-xlsp-struct-did-change-text-document-params
+              :text-document
+              (make-xlsp-struct-versioned-text-document-identifier
+               :uri (xlsp-urify
+                     (buffer-file-name
+                      (xlsp-struct-synchronize-buffer synchronize*)))
+               :version (xlsp-struct-synchronize-version synchronize*))
+              :content-changes
+              (prog1
+                  (if (equal kind xlsp-text-document-sync-kind/incremental)
+                      (nreverse
+                       (copy-sequence
+                        (xlsp-struct-synchronize-events synchronize*)))
+                    (with-current-buffer (xlsp-struct-synchronize-buffer synchronize*)
                       (save-restriction
                         (widen)
-                        (setf (alist-get 'character-offset before-state*)
-                              (- beg (line-beginning-position))
-                              (alist-get 'line-offset before-state*)
-                              (1- (line-number-at-pos beg))
-                              (alist-get 'snippet before-state*)
-                              (buffer-substring-no-properties (line-beginning-position)
-                                                              end))))
-                  ;; In `after-change-functions'
-                  (let ((pos (1+ (alist-get 'character-offset before-state*))))
-                    (funcall
-                     (xlsp-synchronize-closure)
-                     :cumulate
-                     (xlsp-literal
-                      :range (make-xlsp-struct-range
-                              ;; get-row-col POS is one-indexed
-                              :start (get-row-col pos)
-                              :end (get-row-col (+ pos deleted)))
-                      :text (buffer-substring-no-properties beg end))))
-                  (setf (alist-get 'character-offset before-state*) nil
-                        (alist-get 'line-offset before-state*) nil
-                        (alist-get 'snippet before-state*) nil))))
-            '((character-offset . nil) (line-offset . nil) (snippet . nil))))))
+                        (buffer-substring-no-properties
+                         (point-min) (point-max)))))
+                ;; Events sent; clear for next batch.
+                (setf (xlsp-struct-synchronize-events synchronize*) nil))))))
+        (when save
+          (jsonrpc-notify
+           (xlsp-connection-get (xlsp-struct-synchronize-buffer synchronize*))
+           xlsp-notification-text-document/did-save
+           (make-xlsp-struct-did-save-text-document-params
+            :text-document
+            (make-xlsp-struct-versioned-text-document-identifier
+             :uri (xlsp-urify
+                   (buffer-file-name
+                    (xlsp-struct-synchronize-buffer synchronize*)))
+             :version (xlsp-struct-synchronize-version synchronize*)))))))
+     (make-xlsp-struct-synchronize :buffer (current-buffer)))))
+
+(defun xlsp-did-change-text-document (&optional probe-p)
+  (xlsp-get-closure
+    probe-p
+    xlsp--did-change-text-document
+    (apply-partially
+     (lambda (before-state* beg end &optional deleted)
+       "BEFORE-STATE* is naturally thread unsafe."
+       (cl-flet ((get-row-col (pos)
+                   (let ((send-pos
+                          (with-temp-buffer
+                            (save-excursion
+                              (insert (alist-get 'snippet before-state*)))
+                            (xlsp-position (current-buffer) (min pos (point-max))))))
+                     (make-xlsp-struct-position
+                      :line (+ (alist-get 'line-offset before-state*)
+                               (car send-pos))
+                      :character (cdr send-pos)))))
+         (if (not deleted)
+             ;; In `before-change-functions'
+             (save-excursion
+               (goto-char beg)
+               (save-restriction
+                 (widen)
+                 (setf (alist-get 'character-offset before-state*)
+                       (- beg (line-beginning-position))
+                       (alist-get 'line-offset before-state*)
+                       (1- (line-number-at-pos beg))
+                       (alist-get 'snippet before-state*)
+                       (buffer-substring-no-properties (line-beginning-position)
+                                                       end))))
+           ;; In `after-change-functions'
+           (let ((pos (1+ (alist-get 'character-offset before-state*))))
+             (funcall
+              (xlsp-synchronize-closure)
+              :cumulate
+              (xlsp-literal
+               :range (make-xlsp-struct-range
+                       ;; get-row-col POS is one-indexed
+                       :start (get-row-col pos)
+                       :end (get-row-col (+ pos deleted)))
+               :text (buffer-substring-no-properties beg end))))
+           (setf (alist-get 'character-offset before-state*) nil
+                 (alist-get 'line-offset before-state*) nil
+                 (alist-get 'snippet before-state*) nil))))
+     '((character-offset . nil) (line-offset . nil) (snippet . nil)))))
+
+(defun xlsp-did-save-text-document (&optional probe-p)
+  (xlsp-get-closure
+    probe-p
+    xlsp--did-save-text-document
+    (lambda () (funcall (xlsp-synchronize-closure) :save t))))
+
+(defalias 'xlsp-toggle-hooks
+  (lambda (conn)
+    (let ((did-change-predicate
+           (lambda (conn)
+             (let ((kind (xlsp-capability conn
+                           xlsp-struct-server-capabilities-text-document-sync
+                           xlsp-struct-text-document-sync-options-change)))
+               (and kind (not (equal kind xlsp-text-document-sync-kind/none)))))))
+      (dolist (entry
+               `([before-change-functions
+                  ,did-change-predicate
+                  xlsp-did-change-text-document]
+                 [after-change-functions
+                  ,did-change-predicate
+                  xlsp-did-change-text-document]
+                 [after-save-hook
+                  (lambda (conn)
+                    (xlsp-capability conn
+                      xlsp-struct-server-capabilities-text-document-sync
+                      xlsp-struct-text-document-sync-options-save))
+                  xlsp-did-save-text-document]))
+        (cl-destructuring-bind (hooks predicate closure)
+            (append entry nil)
+          (if conn
+              (when (funcall predicate conn)
+                (add-hook hooks (funcall closure) nil :local))
+            (when-let ((extant (funcall closure :probe)))
+              (remove-hook hooks extant :local))))))))
 
 (define-minor-mode xlsp-mode
   "Start and consult language server if applicable."
@@ -428,17 +559,8 @@ lsp/3.17/specification/#uri"
             (prog1 map
               (define-key map (kbd "C-M-i") #'xlsp-completion-in-region)))
   :group 'xlsp
-  (cl-macrolet ((install-hooks (&rest pairs)
-                  `(dolist (entry ',pairs)
-                     (cl-destructuring-bind (hooks . closure)
-                         entry
-                       (if xlsp-mode
-                           (add-hook hooks (funcall closure) nil :local)
-                         (remove-hook hooks (funcall closure) :local))))))
-    (install-hooks (before-change-functions . xlsp-did-change-text-document)
-                   (after-change-functions . xlsp-did-change-text-document)
-                   (before-save-hook . xlsp-will-save-text-document)
-                   (after-save-hook . xlsp-did-save-text-document))))
+  (unless xlsp-mode ; we only remove hooks here, we add them in success-fn.
+    (xlsp-toggle-hooks nil)))
 
 (cl-defmethod jsonrpc-connection-ready-p ((conn xlsp-connection) _what)
   (and (cl-call-next-method) (oref conn ready-p)))

@@ -2,7 +2,7 @@ export EMACS ?= $(shell which emacs)
 
 .PHONY: schema
 schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.json
-	$(EMACS) -Q --batch -L . -l xlsp-hyphenate -l pp --eval "               \
+	$(EMACS) -Q --batch -L . -l xlsp-utils -l pp --eval "                  \
 (with-temp-buffer                                                              \
   (save-excursion (insert-file-contents \"$^\"))                               \
   (let ((alist (json-parse-buffer :object-type (quote alist)                   \

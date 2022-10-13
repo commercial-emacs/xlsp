@@ -25,6 +25,7 @@
 
 ;;; Code:
 
+(require 'xlsp-utils)
 (require 'xlsp-struct)
 
 (cl-defgeneric xlsp-handle-request (conn method params))

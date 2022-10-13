@@ -1,4 +1,4 @@
-;;; xlsp-hyphenate.el -*- lexical-binding: t; -*-
+;;; xlsp-utils.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2022 Commercial Emacs
 
@@ -23,16 +23,25 @@
 
 ;;; Commentary:
 
-;; Break out xlsp-hyphenate for `make schema`.
-
 ;;; Code:
 
 (require 'cl-lib)
+(require 'url-util)
+(require 'jsonrpc)
+
+(defun xlsp-urify (path)
+  "RFC3986, like all RFCs, are write-only.
+https://microsoft.github.io/language-server-protocol/specifications/\\
+lsp/3.17/specification/#uri"
+  (let ((url-path-allowed-chars (copy-sequence url-path-allowed-chars)))
+    (aset url-path-allowed-chars ?: nil)
+    (url-encode-url (concat "file://" (expand-file-name path)))))
 
 (defvar xlsp--hyphenate-data (make-hash-table :test #'equal)
   "Every time you `xlsp-hyphenate', make a backref to original camel.")
 
 (defun xlsp-hyphenate (camel)
+  "Break out for `make schema`."
   (let ((word "")
         case-fold-search lifo pc)
     (dolist (c (append camel nil))
@@ -71,6 +80,6 @@
                 (cl-subseq result 1))
       result)))
 
-(provide 'xlsp-hyphenate)
+(provide 'xlsp-utils)
 
-;;; xlsp-hyphenate.el ends here
+;;; xlsp-utils.el ends here
