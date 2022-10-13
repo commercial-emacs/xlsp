@@ -60,10 +60,11 @@
   (defun xlsp-structure-type (alist)
     (let-alist alist
       (cond ((equal .kind "reference")
+             ;; could be an enumeration but intern-soft won't work
              (intern (concat "xlsp-struct-" (xlsp-hyphenate .name))))
             (.items
              (xlsp-structure-type (aref .items 0)))
-            (t (make-symbol (xlsp-hyphenate (or .name .kind)))))))
+            (t (intern (xlsp-hyphenate (or .name .kind)))))))
 
   (defun xlsp-property-type (alist)
     "Supposedly SLOT-OPTION :type only used for documentation."
@@ -115,44 +116,6 @@
   (seq-map
    (lambda (entry)
      (let-alist entry
-       (eval
-        `(cl-defstruct (,(intern (xlsp-structure entry))
-                        ,@(when-let ((extends .extends))
-                            `((:include
-                               ;; `xlsp-structure-type' returns an intern-less
-                               ;; `make-symbol'.
-                               ,(intern (symbol-name
-                                         (xlsp-structure-type (aref extends 0)))))))
-                        (:copier nil))
-           ,@(when (stringp .documentation) (list .documentation))
-           ,@(cl-mapcan #'identity
-                        (seq-map
-                         (lambda (parent)
-                           (when-let ((type (intern-soft (xlsp-structure parent))))
-                             (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
-                         (seq-drop .extends 1)))
-           ,@(seq-map
-              (lambda (alist)
-                (let-alist alist
-                  `(,(make-symbol (xlsp-hyphenate .name))
-                    nil
-                    :read-only t
-                    :type ,(xlsp-property-type alist)
-                    ,@(when (or .optional .documentation)
-                        (list :documentation
-                              (string-trim-right
-                               (concat (if .optional "Optional. " "")
-                                       (or .documentation ""))))))))
-              .properties)))))
-   ;; (make-vector
-   ;;  1 (seq-find (lambda (x) (equal "RenameOptions"
-   ;;                                 (alist-get 'name x)))
-   ;;              xlsp-structures))
-   (xlsp-top-sort xlsp-structures))
-
-  (seq-map
-   (lambda (entry)
-     (let-alist entry
        (let ((namespace (xlsp-enumeration entry)))
          (eval
           `(progn
@@ -166,6 +129,39 @@
    ;;  1 (seq-find (lambda (x) (equal "MarkupKind" (alist-get 'name x)))
    ;;              xlsp-enumerations))
    xlsp-enumerations)
+
+  (seq-map
+   (lambda (entry)
+     (let-alist entry
+       (eval
+        `(cl-defstruct (,(intern (xlsp-structure entry))
+                        ,@(when-let ((extends .extends))
+                            `((:include
+                               ,(xlsp-structure-type (aref extends 0))))))
+           ,@(when (stringp .documentation) (list .documentation))
+           ,@(cl-mapcan #'identity
+                        (seq-map
+                         (lambda (parent)
+                           (when-let ((type (intern-soft (xlsp-structure parent))))
+                             (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
+                         (seq-drop .extends 1)))
+           ,@(seq-map
+              (lambda (alist)
+                (let-alist alist
+                  `(,(make-symbol (xlsp-hyphenate .name))
+                    nil
+                    :type ,(xlsp-property-type alist)
+                    ,@(when (or .optional .documentation)
+                        (list :documentation
+                              (string-trim-right
+                               (concat (if .optional "Optional. " "")
+                                       (or .documentation ""))))))))
+              .properties)))))
+   ;; (make-vector
+   ;;  1 (seq-find (lambda (x) (equal "RenameOptions"
+   ;;                                 (alist-get 'name x)))
+   ;;              xlsp-structures))
+   (xlsp-top-sort xlsp-structures))
 
   (seq-map
    (lambda (entry)
@@ -248,17 +244,21 @@
     (dolist (slot slots)
       (cl-destructuring-bind (sym _ &key type &allow-other-keys)
           slot
-        (when-let ((keyword (intern (concat ":" (xlsp-hyphenate (symbol-name sym)))))
-                   (value (plist-get json keyword)))
+        (when-let ((our-kw (intern (concat ":" (symbol-name sym))))
+                   (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
+                                                                   :as-slot))))
+                   (value (plist-get json their-kw)))
           (setq arguments
                 (nconc arguments
-                       (list keyword
+                       (list our-kw
                              (pcase type
                                (`(list-of ,property-type)
                                 (apply #'xlsp-array
                                        (seq-map
                                         (lambda (elem)
-                                          (xlsp-unjsonify property-type elem))
+                                          (if (get property-type 'cl--class)
+                                              (xlsp-unjsonify property-type elem)
+                                            elem))
                                         value)))
                                ((pred (lambda (type) (get type 'cl--class)))
                                 (xlsp-unjsonify type value))
