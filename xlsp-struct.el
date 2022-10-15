@@ -278,4 +278,81 @@
                                  (_ (xlsp-unjsonify type value)))))))))
       (apply (intern (format "make-%s" struct-type)) arguments))))
 
+(defconst xlsp-default-struct-client-capabilities
+  (make-xlsp-struct-client-capabilities
+   :workspace (make-xlsp-struct-workspace-client-capabilities
+               :workspace-edit (make-xlsp-struct-workspace-edit-client-capabilities
+                                :document-changes t)
+               :configuration t
+               :workspace-folders t)
+   :text-document (make-xlsp-struct-text-document-client-capabilities
+                   :synchronization (make-xlsp-struct-text-document-sync-client-capabilities
+                                     :did-save t)
+                   :completion (make-xlsp-struct-completion-client-capabilities)
+                   :hover (make-xlsp-struct-hover-client-capabilities
+                           :content-format (xlsp-array xlsp-markup-kind/plain-text
+                                                       xlsp-markup-kind/markdown))
+                   :signature-help (make-xlsp-struct-signature-help-client-capabilities
+                                    :signature-information
+                                    (xlsp-literal
+                                     :parameterInformation
+                                     (xlsp-literal :labelOffSupport t)
+                                     :activeParameterSupport t))
+                   :declaration (make-xlsp-struct-declaration-client-capabilities
+                                 :link-support t)
+                   :definition (make-xlsp-struct-definition-client-capabilities
+                                :link-support t)
+                   :type-definition (make-xlsp-struct-type-definition-client-capabilities
+                                     :link-support t)
+                   :implementation (make-xlsp-struct-implementation-client-capabilities
+                                    :link-support t)
+                   :document-symbol (make-xlsp-struct-document-symbol-client-capabilities
+                                     :hierarchical-document-symbol-support t
+                                     :symbol-kind
+                                     (xlsp-literal
+                                      :valueSet
+                                      (apply
+                                       #'xlsp-array
+                                       (mapcar
+                                        (lambda (x)
+                                          (symbol-value
+                                           (intern-soft
+                                            (xlsp-namespace x "xlsp-symbol-kind"))))
+                                        '("file" "module" "namespace" "package" "class"
+                                          "method" "property" "field" "constructor"
+                                          "enum" "interface" "function" "variable"
+                                          "constant" "string" "number" "boolean" "array"
+                                          "object" "key" "null" "enum-member" "struct"
+                                          "event" "operator" "type-parameter")))))
+                   :code-action (make-xlsp-struct-code-action-client-capabilities
+                                 :code-action-literal-support
+                                 (xlsp-literal
+                                  :codeActionKind
+                                  (xlsp-literal
+                                   :valueSet
+                                   (apply
+                                    #'xlsp-array
+                                    (mapcar
+                                     (lambda (x)
+                                       (symbol-value
+                                        (intern-soft
+                                         (xlsp-namespace x "xlsp-code-action-kind"))))
+                                     '("quick-fix" "refactor" "refactor-extract"
+                                       "refactor-inline" "refactor-rewrite"
+                                       "source" "source-organize-imports"))))))
+                   :publish-diagnostics (make-xlsp-struct-publish-diagnostics-client-capabilities
+                                         :related-information :json-false
+                                         :code-description-support :json-false
+                                         :tag-support
+                                         (xlsp-literal
+                                          :valueSet
+                                          (apply
+                                           #'xlsp-array
+                                           (mapcar
+                                            (lambda (x)
+                                              (symbol-value
+                                               (intern-soft
+                                                (xlsp-namespace x "xlsp-diagnostic-tag"))))
+                                            '("unnecessary" "deprecated"))))))))
+
 (provide 'xlsp-struct)
