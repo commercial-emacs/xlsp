@@ -123,24 +123,25 @@ I use inode in case project directory gets renamed.")
   "Should not be called outside xlsp.el."
   ;; Was added in xlsp--connect.
   (remove-hook 'find-file-hook (apply-partially #'xlsp-find-file-hook conn-key))
-  (if-let ((conn (xlsp-gv-connection conn-key))
-           (running-p (jsonrpc-running-p conn)))
-      (jsonrpc-async-request
-       conn
-       xlsp-request-shutdown
-       nil
-       :success-fn
-       (cl-function
-        (lambda (_no-result)
-          (jsonrpc-notify conn xlsp-notification-exit nil)
-          (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-          (run-with-timer 2 nil #'jsonrpc-shutdown conn :cleanup)))
-       :error-fn
-       (lambda (error)
-         (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
-                       (plist-get error :code))))
-    (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-    (jsonrpc-shutdown conn :cleanup)))
+  (let ((conn (xlsp-gv-connection conn-key)))
+    (if (and conn (jsonrpc-running-p conn))
+        (jsonrpc-async-request
+         conn
+         xlsp-request-shutdown
+         nil
+         :success-fn
+         (cl-function
+          (lambda (_no-result)
+            (jsonrpc-notify conn xlsp-notification-exit nil)
+            (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
+            (run-with-timer 2 nil #'jsonrpc-shutdown conn :cleanup)))
+         :error-fn
+         (lambda (error)
+           (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
+                         (plist-get error :code))))
+      (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
+      (when conn
+        (jsonrpc-shutdown conn :cleanup)))))
 
 (defun xlsp-connection-remove (buffer)
   (with-xlsp-connection (conn-key project-dir)
@@ -271,7 +272,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                     ;; a sentinel in jsonrpc calls :on-shutdown
                     :on-shutdown (with-xlsp-connection (conn-key project-dir)
                                      buffer
-                                   (lambda (conn)
+                                   (lambda (_conn)
                                      (xlsp-connection--destroy conn-key)))
                     :process process)
                  (error (delete-process process)
@@ -603,7 +604,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
             (append entry nil)
           (if conn
               (when (funcall predicate conn)
-                (add-hook hooks (funcall closure) nil :local))
+                (add-hook hooks (funcall closure) depth :local))
             (when-let ((extant (funcall closure :probe)))
               (remove-hook hooks extant :local))))))))
 
