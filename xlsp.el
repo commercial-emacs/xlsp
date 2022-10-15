@@ -134,7 +134,7 @@ I use inode in case project directory gets renamed.")
           (lambda (_no-result)
             (jsonrpc-notify conn xlsp-notification-exit nil)
             (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-            (run-with-timer 2 nil #'jsonrpc-shutdown conn :cleanup)))
+            (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
          :error-fn
          (lambda (error)
            (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
@@ -227,7 +227,8 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
 
 (defun xlsp-message (format &rest args)
   "Message out with FORMAT with ARGS."
-  (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time))))
+  (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time)))
+        (inhibit-message t))
     (apply #'message (concat lhs format) args)))
 
 (defmacro xlsp-capability (conn &rest methods)
@@ -325,8 +326,10 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                   (with-current-buffer b
                     (when (equal major-mode (car conn-key))
                       ;; Now that we know capabilities, selectively activate hooks
-                      (xlsp-toggle-hooks conn)
-                      (funcall (xlsp-did-open-text-document))))))
+                      (when xlsp-mode
+                        (xlsp-toggle-hooks nil) ; cleanse palate
+                        (xlsp-toggle-hooks conn)
+                        (funcall (xlsp-did-open-text-document)))))))
 
               ;; Register workspace-specific config, if any.
               (when-let ((settings
@@ -348,7 +351,6 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
            (xlsp-message "%s timed out" name)
            (xlsp-connection-remove buffer)))
       (error
-       ;; since condition-case body was async-request,
        ;; cleaning up process only happens when forming
        ;; the request had errors, not when callbacks do.
        (jsonrpc-shutdown conn :cleanup)
@@ -394,17 +396,21 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
       (lambda (synchronize* &key cumulate send save &allow-other-keys)
         "SYNCHRONIZE* is naturally thread unsafe state."
         (when cumulate
-          (push cumulate (xlsp-struct-synchronize-events synchronize*))
+          (push cumulate
+                (xlsp-struct-synchronize-events synchronize*))
           (cl-incf (xlsp-struct-synchronize-version synchronize*))
           (when (and (not (xlsp-struct-synchronize-timer synchronize*))
                      (not send))
             (setf (xlsp-struct-synchronize-timer synchronize*)
                   (run-with-idle-timer
                    0.8 nil
-                   (lambda ()
-                     "Assume no context switch to :cumulate during :send."
-                     (funcall xlsp--synchronize-closure :send t)
-                     (setf (xlsp-struct-synchronize-timer synchronize*) nil))))))
+                   (apply-partially
+                    (lambda (buffer*)
+                      "Assume no context switch to :cumulate during :send."
+                      (with-current-buffer buffer*
+                        (funcall xlsp--synchronize-closure :send t)
+                        (setf (xlsp-struct-synchronize-timer synchronize*) nil)))
+                    (xlsp-struct-synchronize-buffer synchronize*))))))
         (when send
           (let* ((conn (xlsp-connection-get
                         (xlsp-struct-synchronize-buffer synchronize*)))
@@ -425,9 +431,10 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                :content-changes
                (prog1
                    (if (equal kind xlsp-text-document-sync-kind/incremental)
-                       (nreverse
-                        (copy-sequence
-                         (xlsp-struct-synchronize-events synchronize*)))
+                       (apply #'vector
+                              (nreverse
+                               (copy-sequence
+                                (xlsp-struct-synchronize-events synchronize*))))
                      (let ((full-text
                             (with-current-buffer
                                 (xlsp-struct-synchronize-buffer synchronize*)
@@ -435,7 +442,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                                 (widen)
                                 (buffer-substring-no-properties
                                  (point-min) (point-max))))))
-                       (list (xlsp-literal :text full-text))))
+                       (vector (xlsp-literal :text full-text))))
                  ;; Events sent; clear for next batch.
                  (setf (xlsp-struct-synchronize-events synchronize*) nil)))))))
         (when save
@@ -490,10 +497,11 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                 (xlsp-synchronize-closure)
                 :cumulate
                 (xlsp-literal
-                 :range (make-xlsp-struct-range
-                         ;; get-row-col POS is one-indexed
-                         :start (get-row-col pos)
-                         :end (get-row-col (+ pos deleted)))
+                 :range (xlsp-jsonify
+                         (make-xlsp-struct-range
+                          ;; get-row-col POS is one-indexed
+                          :start (get-row-col pos)
+                          :end (get-row-col (+ pos deleted))))
                  :text (buffer-substring-no-properties beg end))))
              (setq before-state* state-empty))))
        state-empty))))
@@ -582,7 +590,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                   -2]
                  [kill-buffer-hook
                   identity
-                  (lambda () ; for the closure
+                  (lambda (&rest _args) ; for the closure
                     (lambda () ; for the actual hook
                       "Dispose connection if last registered buffer."
                       (when-let ((conn (xlsp-connection-get (current-buffer))))
@@ -612,15 +620,32 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   :lighter nil
   :keymap (let ((map (make-sparse-keymap)))
             (prog1 map
+              ;; Because ph___ capf
               (define-key map (kbd "C-M-i") #'xlsp-completion-in-region)))
   :group 'xlsp
-  (unless xlsp-mode ; we only remove hooks here, we add them in success-fn.
-    (xlsp-toggle-hooks nil)))
+  (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
+  (when xlsp-mode
+    (let ((conn (xlsp-connection-get (current-buffer))))
+      (if (jsonrpc-connection-ready-p conn :handshook)
+          (xlsp-toggle-hooks conn)
+        (ignore "Presume async handshake will toggle hooks.")))))
 
 (cl-defmethod jsonrpc-connection-ready-p ((conn xlsp-connection) _what)
   (and (cl-call-next-method) (oref conn ready-p)))
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
+
+(defun xlsp-mode-activate ()
+  (unless (minibufferp)
+    (let (inhibit-quit)
+      (xlsp-mode))))
+
+;;;###autoload
+(define-globalized-minor-mode global-xlsp-mode
+  xlsp-mode
+  (lambda () (when (derived-mode-p 'prog-mode) (xlsp-mode)))
+  :group 'xlsp
+  :version "29.1")
 
 (provide 'xlsp)
 
