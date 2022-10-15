@@ -312,9 +312,6 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                   (add-hook 'find-file-hook
                             (apply-partially #'xlsp-find-file-hook conn-key))))
 
-              ;; Now that we know capabilities, selectively activate hooks
-              (xlsp-toggle-hooks conn)
-
               ;; Ack
               (jsonrpc-notify conn xlsp-notification-initialized
                               (xlsp-jsonify (make-xlsp-struct-initialized-params)))
@@ -327,6 +324,8 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                             (xlsp-project-buffers (project-current nil project-dir))))
                   (with-current-buffer b
                     (when (equal major-mode (car conn-key))
+                      ;; Now that we know capabilities, selectively activate hooks
+                      (xlsp-toggle-hooks conn)
                       (funcall (xlsp-did-open-text-document))))))
 
               ;; Register workspace-specific config, if any.
