@@ -76,7 +76,7 @@
                 (lambda (f &rest args)
                   (let ((inhibit-message t))
                     (apply f args)))
-                '((name . "xlsp-quiet-sentinel"))))
+                '((name . "xlsp-advise-sentinel"))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).
@@ -182,14 +182,6 @@ I use inode in case project directory gets renamed.")
 (defun xlsp--initialization-options (project-dir)
   (ignore project-dir))
 
-(defun xlsp-completion-in-region (buffer beg)
-  "No-frills minibuffer completion, like `lisp-complete-symbol'."
-  (interactive (list (current-buffer) (point)))
-  (when-let ((salvo (xlsp-completion-salvo buffer beg)))
-    (cl-destructuring-bind (beg end _cache-p candidates)
-        salvo
-      (completion-in-region beg end candidates))))
-
 (defun xlsp-their-pos (buffer our-pos)
   "Return cons pair of LSP-space zero-indexed line and character offset.
 PositionEncodingKind currently disregarded."
@@ -225,10 +217,13 @@ PositionEncodingKind currently disregarded."
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
      (funcall (with-current-buffer ,buffer (xlsp-synchronize-closure)) :send t)
-     (funcall #'jsonrpc-request ,@args)))
+     (funcall (function ,(if (memq :success-fn args)
+                             'jsonrpc-async-request
+                           'jsonrpc-request))
+              ,@args)))
 
-(defun xlsp-completion-salvo (buffer pos)
-  "Return list of (BEG END CACHE-P CANDIDATES) or nil if unable to complete.
+(defun xlsp-completion-salvo (buffer pos callback)
+  "CALLBACK accepts arguments BEG END CACHE-P CANDIDATES.
 The interval [BEG, END) spans the region supplantable by CANDIDATES.
 CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
   (when-let ((conn (xlsp-connection-get buffer))
@@ -240,33 +235,48 @@ CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
                                    :line (car send-pos)
                                    :character (cdr send-pos)))
                       :context (make-xlsp-struct-completion-context
-                                :trigger-kind xlsp-completion-trigger-kind/invoked)))
-             (result (xlsp-unjsonify
-                      'xlsp-struct-completion-list
-                      (xlsp-sync-then-request
-                       buffer conn xlsp-request-text-document/completion
-                       (xlsp-jsonify params) :deferred t)))
-             (items (append (xlsp-struct-completion-list-items result) nil))
-             (range (xlsp-struct-text-edit-range
-                     (xlsp-struct-completion-item-text-edit (car items))))
-             (beg (xlsp-our-pos buffer (xlsp-struct-range-start range)))
-             (end (xlsp-our-pos buffer (xlsp-struct-range-end range)))
-             (extant (buffer-substring-no-properties beg end)))
-    (list beg end (not (xlsp-struct-completion-list-is-incomplete result))
-          (cl-loop for item in items
-                   ;; :end2 says PREFIX matches beginning of RESULT
-                   when (cl-search extant (xlsp-struct-completion-item-filter-text item)
-                                   :end2 (length extant))
-                   collect (xlsp-struct-completion-item-filter-text item)))))
+                                :trigger-kind xlsp-completion-trigger-kind/invoked))))
+    (xlsp-sync-then-request
+     buffer conn xlsp-request-text-document/completion
+     (xlsp-jsonify params)
+     :deferred t ; if gunslinger fires the instant buffer opens
+     :success-fn
+     (cl-function
+      (lambda (result-plist
+               &aux (result (xlsp-unjsonify 'xlsp-struct-completion-list
+                                            result-plist)))
+        (let* ((items (append (xlsp-struct-completion-list-items result) nil))
+               (range (xlsp-struct-text-edit-range
+                       (xlsp-struct-completion-item-text-edit (car items))))
+               (beg (xlsp-our-pos buffer (xlsp-struct-range-start range)))
+               (end (xlsp-our-pos buffer (xlsp-struct-range-end range)))
+               (extant (with-current-buffer buffer
+                         (buffer-substring-no-properties beg end))))
+          (apply
+           callback
+           (list beg end
+                 (not (xlsp-struct-completion-list-is-incomplete result))
+                 (cl-loop
+                  for item in items
+                  when (cl-search ; :end2 anchors match to start of RESULT
+                        extant
+                        (xlsp-struct-completion-item-filter-text item)
+                        :end2 (length extant))
+                  collect (xlsp-struct-completion-item-filter-text item)))))))
+     :error-fn
+     (lambda (error)
+       (xlsp-message "xlsp-completion-salvo: %s (%s)"
+                     (plist-get error :message)
+                     (plist-get error :code))))))
 
 (defun xlsp--capabilities (project-dir)
   (ignore project-dir)
   xlsp-default-struct-client-capabilities)
 
 (defcustom xlsp-invocations
-  (quote ((c-mode . "clangd --header-insertion-decorators=0")
-          (c++-mode . "clangd --header-insertion-decorators=0")
-          (objc-mode . "clangd --header-insertion-decorators=0")))
+  (quote ((c-mode . "clangd")
+          (c++-mode . "clangd")
+          (objc-mode . "clangd")))
   "Alist values must begin with an executable, e.g., clangd.
 If you need to set environment variables,
 try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
@@ -292,13 +302,12 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
          (unless result (throw 'done result))))
      result))
 
+(defmacro xlsp-advise-tag (variable)
+  `(symbol-name ',variable))
+
 (define-minor-mode xlsp-mode
   "Start and consult language server if applicable."
   :lighter nil
-  :keymap (let ((map (make-sparse-keymap)))
-            (prog1 map
-              ;; Because ph___ capf
-              (define-key map (kbd "C-M-<return>") #'xlsp-completion-in-region)))
   :group 'xlsp
   (require 'company)
   (defvar company-prefix)
@@ -306,12 +315,12 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   (defvar company-backends)
   (defvar company-minimum-prefix-length)
   (defvar company-mode)
+  (defvar global-company-mode)
   (declare-function company-grab-symbol "company")
   (declare-function company-in-string-or-comment "company")
   (declare-function company-mode "company")
   (declare-function company--contains "company")
 
-  (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
   (let* ((candidates-state '((beg . nil) (end . nil) (cache-p . nil)))
          (candidates-directive
           (apply-partially
@@ -324,29 +333,30 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                     (cons (alist-get 'beg state*) (alist-get 'end state*)))
                    (otherwise
                     (error "Unrecognized query %S" query)))
-               (when-let ((salvo (xlsp-completion-salvo (current-buffer) (point))))
-                 (cl-destructuring-bind (beg end cache-p candidates)
-                     salvo
-                   (prog1 (funcall cb candidates)
-                     (setf (alist-get 'beg state*) beg
-                           (alist-get 'end state*) end
-                           (alist-get 'cache-p state*) cache-p))))))
+               (xlsp-completion-salvo
+                (current-buffer) (point)
+                (lambda (beg end cache-p candidates)
+                  (prog1 (funcall cb candidates)
+                    (setf (alist-get 'beg state*) beg
+                          (alist-get 'end state*) end
+                          (alist-get 'cache-p state*) cache-p))))))
            candidates-state))
-         (around-company-calculate-candidates
+         (xlsp-advise-cache
           (lambda (f &rest args)
-            (let ((restore-cache (bound-and-true-p company-candidates-cache)))
+            (let ((restore-cache company-candidates-cache))
               (prog1 (apply f args)
                 (when xlsp-mode
                   (unless (funcall candidates-directive nil :cache-p)
                     (setq company-candidates-cache restore-cache)))))))
-         (before-company-update-candidates
+         (xlsp-advise-prefix
           (lambda (&rest _args)
             (when xlsp-mode
               (cl-destructuring-bind (beg . end)
                   (funcall candidates-directive nil :beg-end)
-                (when (and beg end)
-                  (setq company-prefix (buffer-substring-no-properties beg end)))))))
-         (override-company-contains
+                (when beg
+                  ;; `company--insert-candidate' requires point, not END.
+                  (setq company-prefix (buffer-substring-no-properties beg (point))))))))
+         (xlsp-advise-contains
           (lambda (elt cur)
             "Closures contain dotted pairs (symbol . compiled-function)."
             (cond ((eq elt cur) t)
@@ -377,26 +387,29 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
     (if xlsp-mode
         (progn
           (add-function :around (symbol-function 'company-calculate-candidates)
-                        around-company-calculate-candidates
-                        '((name . "xlsp-fix-cache")))
+                        xlsp-advise-cache
+                        '((name . ,(xlsp-advise-tag xlsp-advise-cache))))
           (add-function :before (symbol-function 'company-update-candidates)
-                        before-company-update-candidates
-                        '((name . "xlsp-fix-prefix")))
+                        xlsp-advise-prefix
+                        `((name . ,(xlsp-advise-tag xlsp-advise-prefix))))
           (when (fboundp 'company--contains)
             (add-function :override (symbol-function 'company--contains)
-                          override-company-contains
-                          '((name . "xlsp-fix-contains"))))
-          (setq-local company-backends
-                      (remq 'company-capf company-backends))
+                          xlsp-advise-contains
+                          '((name . ,(xlsp-advise-tag xlsp-advise-contains)))))
+          (setq-local company-backends company-backends)
           (cl-pushnew backend company-backends)
           (setq-local company-minimum-prefix-length 3)
           (unless company-mode
             (company-mode))
+          (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
           (when-let ((conn (xlsp-connection-get (current-buffer))))
             (if (jsonrpc-connection-ready-p conn :handshook)
                 (xlsp-toggle-hooks conn)
               (ignore "Presume async handshake will install hooks."))))
       ;; those add-functions are forever...
+      (xlsp-toggle-hooks nil)
+      (unless global-company-mode
+        (company-mode -1))
       (kill-local-variable 'company-backends)
       (kill-local-variable 'company-minimum-prefix-length))))
 
@@ -589,7 +602,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                                 (point-min) (point-max))))))
                       (vector (xlsp-literal :text full-text))))))
             (unless (zerop (length changes))
-              (jsonrpc-notify
+              (jsonrpc-notify ; notifications are fire-and-forget
                conn
                xlsp-notification-text-document/did-change
                (xlsp-jsonify
