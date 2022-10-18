@@ -55,6 +55,10 @@
 (require 'xlsp-handle-request)
 (require 'xlsp-handle-notification)
 
+;; Commercial Emacs only
+(declare-function tree-sitter-node-type "tree-sitter")
+(declare-function tree-sitter-node-at "tree-sitter")
+
 (defgroup xlsp nil
   "Language Server Protocol."
   :prefix "xlsp-"
@@ -65,6 +69,14 @@
    (capabilities :initform nil)
    (server-info :initform nil)
    (buffers :initform nil)))
+
+(cl-defmethod initialize-instance ((conn xlsp-connection) _slots)
+  (cl-call-next-method)
+  (add-function :around (process-sentinel (jsonrpc--process conn))
+                (lambda (f &rest args)
+                  (let ((inhibit-message t))
+                    (apply f args)))
+                '((name . "xlsp-quiet-sentinel"))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).
@@ -173,41 +185,57 @@ I use inode in case project directory gets renamed.")
 (defun xlsp-completion-in-region (buffer beg)
   "No-frills minibuffer completion, like `lisp-complete-symbol'."
   (interactive (list (current-buffer) (point)))
-  (when-let ((beg-end (with-current-buffer buffer
-                        (save-excursion
-                          (goto-char beg)
-                          (bounds-of-thing-at-point 'symbol))))
-             (our-prefix (with-current-buffer buffer
-                           (buffer-substring-no-properties
-                            (car beg-end) (cdr beg-end))))
-             (candidates (xlsp-completion-salvo buffer our-prefix beg)))
-    (completion-in-region (car beg-end) (cdr beg-end) candidates)))
+  (when-let ((salvo (xlsp-completion-salvo buffer beg)))
+    (cl-destructuring-bind (beg end _cache-p candidates)
+        salvo
+      (completion-in-region beg end candidates))))
 
-(defun xlsp-position (buffer pos)
+(defun xlsp-their-pos (buffer our-pos)
   "Return cons pair of LSP-space zero-indexed line and character offset.
 PositionEncodingKind currently disregarded."
   (with-current-buffer buffer
     (save-excursion
-      (goto-char pos)
+      (goto-char our-pos)
       (save-restriction
         (widen)
         (let ((utf-16 (encode-coding-region (line-beginning-position)
                                             (point) 'utf-16 t)))
           (cons (1- (line-number-at-pos))
-                (1- (/ (length utf-16) 2))))))))
+                (/ (- (length utf-16) 2) 2))))))) ; subtract 2 for BOM
+
+(defun xlsp-our-pos (buffer their-pos)
+  "Return one-indexed charpos for LSP-space zero-indexed line/offset."
+  (with-current-buffer buffer
+    (save-excursion
+      (save-restriction
+        (widen)
+        (let ((source-line (line-number-at-pos))
+              (target-line (1+ (xlsp-struct-position-line their-pos))))
+          (when (zerop (forward-line (- target-line source-line)))
+            (+ (line-beginning-position)
+               (let* ((utf-16 (encode-coding-region
+                               (line-beginning-position)
+                               (line-end-position) 'utf-16 t))
+                      (upto-char
+                       (cl-subseq ; add 2 for BOM
+                        utf-16 0
+                        (+ 2 (* 2 (xlsp-struct-position-character their-pos))))))
+                 (length (decode-coding-string upto-char 'utf-16))))))))))
 
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
      (funcall (with-current-buffer ,buffer (xlsp-synchronize-closure)) :send t)
      (funcall #'jsonrpc-request ,@args)))
 
-(defun xlsp-completion-salvo (buffer filter-on pos)
-  "One-shot learning."
+(defun xlsp-completion-salvo (buffer pos)
+  "Return list of (BEG END CACHE-P CANDIDATES) or nil if unable to complete.
+The interval [BEG, END) spans the region supplantable by CANDIDATES.
+CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-completion-params
                       :text-document (make-xlsp-struct-text-document-identifier
                                       :uri (xlsp-urify (buffer-file-name buffer)))
-                      :position (let ((send-pos (xlsp-position buffer pos)))
+                      :position (let ((send-pos (xlsp-their-pos buffer pos)))
                                   (make-xlsp-struct-position
                                    :line (car send-pos)
                                    :character (cdr send-pos)))
@@ -217,12 +245,19 @@ PositionEncodingKind currently disregarded."
                       'xlsp-struct-completion-list
                       (xlsp-sync-then-request
                        buffer conn xlsp-request-text-document/completion
-                       (xlsp-jsonify params) :deferred t))))
-    (cl-loop for item in (append (xlsp-struct-completion-list-items result) nil)
-             ;; :end2 says PREFIX matches beginning of RESULT
-             when (cl-search filter-on (xlsp-struct-completion-item-filter-text item)
-                             :end2 (length filter-on))
-             collect (xlsp-struct-completion-item-filter-text item))))
+                       (xlsp-jsonify params) :deferred t)))
+             (items (append (xlsp-struct-completion-list-items result) nil))
+             (range (xlsp-struct-text-edit-range
+                     (xlsp-struct-completion-item-text-edit (car items))))
+             (beg (xlsp-our-pos buffer (xlsp-struct-range-start range)))
+             (end (xlsp-our-pos buffer (xlsp-struct-range-end range)))
+             (extant (buffer-substring-no-properties beg end)))
+    (list beg end (not (xlsp-struct-completion-list-is-incomplete result))
+          (cl-loop for item in items
+                   ;; :end2 says PREFIX matches beginning of RESULT
+                   when (cl-search extant (xlsp-struct-completion-item-filter-text item)
+                                   :end2 (length extant))
+                   collect (xlsp-struct-completion-item-filter-text item)))))
 
 (defun xlsp--capabilities (project-dir)
   (ignore project-dir)
@@ -243,7 +278,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                  (integer :tag "Number of characters")))
 
 (defun xlsp-message (format &rest args)
-  "Message out with FORMAT with ARGS."
+  "Discrete logging."
   (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time)))
         (inhibit-message t))
     (apply #'message (concat lhs format) args)))
@@ -265,12 +300,105 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
               ;; Because ph___ capf
               (define-key map (kbd "C-M-<return>") #'xlsp-completion-in-region)))
   :group 'xlsp
+  (require 'company)
+  (defvar company-prefix)
+  (defvar company-candidates-cache)
+  (defvar company-backends)
+  (defvar company-minimum-prefix-length)
+  (defvar company-mode)
+  (declare-function company-grab-symbol "company")
+  (declare-function company-in-string-or-comment "company")
+  (declare-function company-mode "company")
+  (declare-function company--contains "company")
+
   (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
-  (when xlsp-mode
-    (when-let ((conn (xlsp-connection-get (current-buffer))))
-      (if (jsonrpc-connection-ready-p conn :handshook)
-          (xlsp-toggle-hooks conn)
-        (ignore "Presume async handshake will toggle hooks.")))))
+  (let* ((candidates-state '((beg . nil) (end . nil) (cache-p . nil)))
+         (candidates-directive
+          (apply-partially
+           (lambda (state* cb &optional query)
+             (if query
+                 (cl-case query
+                   (:cache-p
+                    (alist-get 'cache-p state*))
+                   (:beg-end
+                    (cons (alist-get 'beg state*) (alist-get 'end state*)))
+                   (otherwise
+                    (error "Unrecognized query %S" query)))
+               (when-let ((salvo (xlsp-completion-salvo (current-buffer) (point))))
+                 (cl-destructuring-bind (beg end cache-p candidates)
+                     salvo
+                   (prog1 (funcall cb candidates)
+                     (setf (alist-get 'beg state*) beg
+                           (alist-get 'end state*) end
+                           (alist-get 'cache-p state*) cache-p))))))
+           candidates-state))
+         (around-company-calculate-candidates
+          (lambda (f &rest args)
+            (let ((restore-cache (bound-and-true-p company-candidates-cache)))
+              (prog1 (apply f args)
+                (when xlsp-mode
+                  (unless (funcall candidates-directive nil :cache-p)
+                    (setq company-candidates-cache restore-cache)))))))
+         (before-company-update-candidates
+          (lambda (&rest _args)
+            (when xlsp-mode
+              (cl-destructuring-bind (beg . end)
+                  (funcall candidates-directive nil :beg-end)
+                (when (and beg end)
+                  (setq company-prefix (buffer-substring-no-properties beg end)))))))
+         (override-company-contains
+          (lambda (elt cur)
+            "Closures contain dotted pairs (symbol . compiled-function)."
+            (cond ((eq elt cur) t)
+                  ((consp cur)
+                   (or (company--contains elt (car cur))
+                       (company--contains elt (cdr cur))))
+                  (t nil))))
+         (backend
+          (lambda (directive &optional _word &rest _args)
+            (cl-case directive
+              (candidates
+               (cons :async candidates-directive))
+              (sorted
+               (apply-partially #'identity t))
+              (prefix
+               ;; We use the "prefix" directive only to predict whether
+               ;; issuing a candidates call will be fruitful.  Only
+               ;; the server knows what the prefix really is.
+               (unless (cond ((derived-mode-p 'tree-sitter-prog-mode)
+                              (cl-case (when-let ((type (tree-sitter-node-type
+                                                         (tree-sitter-node-at))))
+                                         (intern type))
+                                ((comment string) t)))
+                             ((derived-mode-p 'prog-mode)
+                              (company-in-string-or-comment))
+                             (t nil))
+                 (company-grab-symbol)))))))
+    (if xlsp-mode
+        (progn
+          (add-function :around (symbol-function 'company-calculate-candidates)
+                        around-company-calculate-candidates
+                        '((name . "xlsp-fix-cache")))
+          (add-function :before (symbol-function 'company-update-candidates)
+                        before-company-update-candidates
+                        '((name . "xlsp-fix-prefix")))
+          (when (fboundp 'company--contains)
+            (add-function :override (symbol-function 'company--contains)
+                          override-company-contains
+                          '((name . "xlsp-fix-contains"))))
+          (setq-local company-backends
+                      (remq 'company-capf company-backends))
+          (cl-pushnew backend company-backends)
+          (setq-local company-minimum-prefix-length 3)
+          (unless company-mode
+            (company-mode))
+          (when-let ((conn (xlsp-connection-get (current-buffer))))
+            (if (jsonrpc-connection-ready-p conn :handshook)
+                (xlsp-toggle-hooks conn)
+              (ignore "Presume async handshake will install hooks."))))
+      ;; those add-functions are forever...
+      (kill-local-variable 'company-backends)
+      (kill-local-variable 'company-minimum-prefix-length))))
 
 (defun xlsp--connect (buffer project-dir)
   (when-let
@@ -348,7 +476,8 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                   buffer
                 (dolist (b (cl-remove-if-not
                             #'buffer-file-name
-                            (xlsp-project-buffers (project-current nil project-dir))))
+                            (when-let ((proj (project-current nil project-dir)))
+                              (xlsp-project-buffers proj))))
                   (with-current-buffer b
                     (when (equal major-mode (car conn-key))
                       ;; Now that we know capabilities, selectively activate hooks
@@ -503,7 +632,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                             (with-temp-buffer
                               (save-excursion
                                 (insert (alist-get 'snippet before-state*)))
-                              (xlsp-position (current-buffer) (min pos (point-max))))))
+                              (xlsp-their-pos (current-buffer) (min pos (point-max))))))
                        (make-xlsp-struct-position
                         :line (+ (alist-get 'line-offset before-state*)
                                  (car send-pos))
