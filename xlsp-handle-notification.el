@@ -28,26 +28,10 @@
 (require 'xlsp-utils)
 (require 'xlsp-struct)
 
-(defun xlsp-notification-param-type (method)
-  (let* ((struct-type
-          (intern
-           (xlsp-notification
-            (list (cons 'method (xlsp-hyphenate (symbol-name method)))))))
-         (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type))))
-    (cl-destructuring-bind (_sym _default &key type &allow-other-keys)
-        (assoc 'params slots)
-      type)))
-
 (cl-defgeneric xlsp-handle-notification (conn method params))
 
-(cl-defmethod xlsp-handle-notification (_conn _method _params)
-  "Handle unknown.")
-
-(cl-defmethod xlsp-handle-notification
-  (_conn (method (eql textDocument/publishDiagnostics)) params)
-  "Handle it."
-  (let ((struct-params
-         (xlsp-unjsonify (xlsp-notification-param-type method) params)))
-    (ignore struct-params)))
+(xlsp-register-handler notification xlsp-notification-text-document/publish-diagnostics
+                       (params getter)
+  (getter :uri))
 
 (provide 'xlsp-handle-notification)

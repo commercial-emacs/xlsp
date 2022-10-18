@@ -80,6 +80,40 @@ lsp/3.17/specification/#uri"
                 (cl-subseq result 1))
       result)))
 
+(defun xlsp-params-type (f method)
+  (let* ((struct-type
+          (intern
+           (funcall f
+            (list (cons 'method (xlsp-hyphenate (symbol-name method)))))))
+         (slots (cl-remove-if-not #'cdr (cl-struct-slot-info struct-type))))
+    (cl-destructuring-bind (_sym _default &key type &allow-other-keys)
+        (assoc 'params slots)
+      type)))
+
+(defmacro xlsp-register-handler (type method-sym formal-args &rest body)
+  (declare (indent 3))
+  (cl-destructuring-bind (params getter)
+      formal-args
+    `(cl-defmethod ,(intern (concat "xlsp-handle-" (symbol-name type)))
+       (_conn (method (eql ,(symbol-value method-sym))) params-plist)
+       "Handle it."
+       (let* ((params-type (xlsp-params-type
+                            (function
+                             ,(intern (concat "xlsp-" (symbol-name type))))
+                            method))
+              (,params (xlsp-unjsonify params-type params-plist)))
+         (cl-flet ((,getter
+                     (kw-member)
+                     (funcall
+                      (symbol-function
+                       (intern
+                        (concat (symbol-name params-type) "-"
+                                (substring
+                                 (symbol-name kw-member)
+                                 (if (eq (aref (symbol-name kw-member) 0) ?:) 1 0)))))
+                      ,params)))
+               ,@body)))))
+
 (provide 'xlsp-utils)
 
 ;;; xlsp-utils.el ends here

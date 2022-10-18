@@ -30,4 +30,8 @@
 
 (cl-defgeneric xlsp-handle-request (conn method params))
 
+(xlsp-register-handler request xlsp-request-client/register-capability
+                       (params getter)
+  (ignore params))
+
 (provide 'xlsp-handle-request)

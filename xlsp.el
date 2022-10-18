@@ -131,34 +131,10 @@ I use inode in case project directory gets renamed.")
                 (,conn-key (cons mode inode)))
        ,@body)))
 
-(defun xlsp-connection--destroy (conn-key)
-  "Should not be called outside xlsp.el."
-  ;; Was added in xlsp--connect.
-  (remove-hook 'find-file-hook (apply-partially #'xlsp-find-file-hook conn-key))
-  (let ((conn (xlsp-gv-connection conn-key)))
-    (if (and conn (jsonrpc-running-p conn))
-        (jsonrpc-async-request
-         conn
-         xlsp-request-shutdown
-         nil
-         :success-fn
-         (cl-function
-          (lambda (_no-result)
-            (jsonrpc-notify conn xlsp-notification-exit nil)
-            (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-            (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
-         :error-fn
-         (lambda (error)
-           (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
-                         (plist-get error :code))))
-      (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-      (when conn
-        (jsonrpc-shutdown conn :cleanup)))))
-
 (defun xlsp-connection-remove (buffer)
   (with-xlsp-connection (conn-key project-dir)
       buffer
-    (xlsp-connection--destroy conn-key)))
+    (xlsp--connection-destroy conn-key project-dir)))
 
 (defun xlsp-find-file-hook (conn-key*)
   (with-xlsp-connection (conn-key project-dir)
@@ -222,7 +198,7 @@ PositionEncodingKind currently disregarded."
                            'jsonrpc-request))
               ,@args)))
 
-(defun xlsp-completion-salvo (buffer pos callback)
+(defun xlsp-do-request-completion (buffer pos callback)
   "CALLBACK accepts arguments BEG END CACHE-P CANDIDATES.
 The interval [BEG, END) spans the region supplantable by CANDIDATES.
 CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
@@ -265,7 +241,7 @@ CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
                   collect (xlsp-struct-completion-item-filter-text item)))))))
      :error-fn
      (lambda (error)
-       (xlsp-message "xlsp-completion-salvo: %s (%s)"
+       (xlsp-message "xlsp-do-request-completion: %s (%s)"
                      (plist-get error :message)
                      (plist-get error :code))))))
 
@@ -333,7 +309,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                     (cons (alist-get 'beg state*) (alist-get 'end state*)))
                    (otherwise
                     (error "Unrecognized query %S" query)))
-               (xlsp-completion-salvo
+               (xlsp-do-request-completion
                 (current-buffer) (point)
                 (lambda (beg end cache-p candidates)
                   (prog1 (funcall cb candidates)
@@ -413,6 +389,39 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
       (kill-local-variable 'company-backends)
       (kill-local-variable 'company-minimum-prefix-length))))
 
+(defun xlsp--connection-destroy (conn-key project-dir)
+  "Should not be called outside xlsp.el."
+  ;; Was added in xlsp--connect.
+  (remove-hook 'find-file-hook (apply-partially #'xlsp-find-file-hook conn-key))
+  (dolist (b (cl-remove-if-not
+              #'buffer-file-name
+              (when-let ((proj (project-current nil project-dir)))
+                (xlsp-project-buffers proj))))
+    (with-current-buffer b
+      (when (equal major-mode (car conn-key))
+        (when xlsp-mode
+          (xlsp-mode -1)))))
+
+  (let ((conn (xlsp-gv-connection conn-key)))
+    (if (and conn (jsonrpc-running-p conn))
+        (jsonrpc-async-request
+         conn
+         xlsp-request-shutdown
+         nil
+         :success-fn
+         (cl-function
+          (lambda (_no-result)
+            (jsonrpc-notify conn xlsp-notification-exit nil)
+            (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
+            (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
+         :error-fn
+         (lambda (error)
+           (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
+                         (plist-get error :code))))
+      (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
+      (when conn
+        (jsonrpc-shutdown conn :cleanup)))))
+
 (defun xlsp--connect (buffer project-dir)
   (when-let
       ((mode (buffer-local-value 'major-mode buffer))
@@ -448,7 +457,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                   :on-shutdown (with-xlsp-connection (conn-key project-dir)
                                    buffer
                                  (lambda (_conn)
-                                   (xlsp-connection--destroy conn-key)))
+                                   (xlsp--connection-destroy conn-key project-dir)))
                   :process process)
                (error (delete-process process)
                       (signal (car err) (cdr err))))))
@@ -463,50 +472,52 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
           (lambda (result-plist
                    &aux (result (xlsp-unjsonify 'xlsp-struct-initialize-result
                                                 result-plist)))
-            (with-current-buffer buffer
-              ;; Populate CONN state
-              (oset conn ready-p t)
-              (oset conn capabilities
-                    (xlsp-struct-initialize-result-capabilities result))
-              (oset conn server-info
-                    (xlsp-struct-initialize-result-server-info result))
+            (if (not (buffer-live-p buffer))
+                (xlsp-message "xlsp--connect: %s no longer exists!" buffer)
+              (with-current-buffer buffer
+                ;; Populate CONN state
+                (oset conn ready-p t)
+                (oset conn capabilities
+                      (xlsp-struct-initialize-result-capabilities result))
+                (oset conn server-info
+                      (xlsp-struct-initialize-result-server-info result))
 
-              ;; Register future file-opens for mode and project (conn-key).
-              (with-xlsp-connection (conn-key project-dir)
-                  buffer
-                (when (xlsp-capability conn
-                        xlsp-struct-server-capabilities-text-document-sync
-                        xlsp-struct-text-document-sync-options-open-close)
-                  (add-hook 'find-file-hook
-                            (apply-partially #'xlsp-find-file-hook conn-key))))
+                ;; Register future file-opens for mode and project (conn-key).
+                (with-xlsp-connection (conn-key project-dir)
+                    buffer
+                  (when (xlsp-capability conn
+                          xlsp-struct-server-capabilities-text-document-sync
+                          xlsp-struct-text-document-sync-options-open-close)
+                    (add-hook 'find-file-hook
+                              (apply-partially #'xlsp-find-file-hook conn-key))))
 
-              ;; Ack
-              (jsonrpc-notify conn xlsp-notification-initialized
-                              (xlsp-jsonify (make-xlsp-struct-initialized-params)))
+                ;; Ack
+                (jsonrpc-notify conn xlsp-notification-initialized
+                                (xlsp-jsonify (make-xlsp-struct-initialized-params)))
 
-              ;; Register project files
-              (with-xlsp-connection (conn-key project-dir)
-                  buffer
-                (dolist (b (cl-remove-if-not
-                            #'buffer-file-name
-                            (when-let ((proj (project-current nil project-dir)))
-                              (xlsp-project-buffers proj))))
-                  (with-current-buffer b
-                    (when (equal major-mode (car conn-key))
-                      ;; Now that we know capabilities, selectively activate hooks
-                      (when xlsp-mode
-                        (xlsp-toggle-hooks nil) ; cleanse palate
-                        (xlsp-toggle-hooks conn)
-                        (funcall (xlsp-did-open-text-document)))))))
+                ;; Register project files
+                (with-xlsp-connection (conn-key project-dir)
+                    buffer
+                  (dolist (b (cl-remove-if-not
+                              #'buffer-file-name
+                              (when-let ((proj (project-current nil project-dir)))
+                                (xlsp-project-buffers proj))))
+                    (with-current-buffer b
+                      (when (equal major-mode (car conn-key))
+                        ;; Now that we know capabilities, selectively activate hooks
+                        (when xlsp-mode
+                          (xlsp-toggle-hooks nil) ; cleanse palate
+                          (xlsp-toggle-hooks conn)
+                          (funcall (xlsp-did-open-text-document)))))))
 
-              ;; Register workspace-specific config, if any.
-              (when-let ((settings
-                          (bound-and-true-p xlsp-workspace-configuration)))
-                (jsonrpc-notify
-                 conn xlsp-notification-workspace/did-change-configuration
-                 (xlsp-jsonify
-                  (make-xlsp-struct-did-change-configuration-params
-                   :settings settings)))))))
+                ;; Register workspace-specific config, if any.
+                (when-let ((settings
+                            (bound-and-true-p xlsp-workspace-configuration)))
+                  (jsonrpc-notify
+                   conn xlsp-notification-workspace/did-change-configuration
+                   (xlsp-jsonify
+                    (make-xlsp-struct-did-change-configuration-params
+                     :settings settings))))))))
          :error-fn
          (lambda (error)
            (xlsp-message "%s %s (%s)" name (plist-get error :message)
@@ -525,13 +536,6 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
        (setq conn nil)
        (signal (car err) (cdr err))))
     conn))
-
-(cl-defmethod xlsp-handle-notification
-  (_conn (method (eql textDocument/publishDiagnostics)) params)
-  "Handle it."
-  (let ((struct-params
-         (xlsp-unjsonify (xlsp-notification-param-type method) params)))
-    (ignore struct-params)))
 
 (cl-defstruct xlsp-struct-synchronize
   "Keep shit together."

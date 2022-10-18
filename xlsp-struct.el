@@ -283,6 +283,9 @@
    :workspace (make-xlsp-struct-workspace-client-capabilities
                :workspace-edit (make-xlsp-struct-workspace-edit-client-capabilities
                                 :document-changes t)
+               :did-change-watched-files (make-xlsp-struct-did-change-watched-files-client-capabilities
+                                          :dynamic-registration t
+                                          :relative-pattern-support json-false)
                :configuration t
                :workspace-folders t)
    :text-document (make-xlsp-struct-text-document-client-capabilities
@@ -341,8 +344,8 @@
                                        "refactor-inline" "refactor-rewrite"
                                        "source" "source-organize-imports"))))))
                    :publish-diagnostics (make-xlsp-struct-publish-diagnostics-client-capabilities
-                                         :related-information :json-false
-                                         :code-description-support :json-false
+                                         :related-information json-false
+                                         :code-description-support json-false
                                          :tag-support
                                          (xlsp-literal
                                           :valueSet
