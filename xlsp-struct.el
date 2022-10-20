@@ -29,17 +29,33 @@
 (eval-and-compile
   (require 'xlsp-utils)
   (defconst xlsp-requests (with-temp-buffer
-                           (save-excursion (insert-file-contents "_requests.el"))
-                           (read (current-buffer))))
+                            (save-excursion
+			      (insert-file-contents
+			       (expand-file-name
+				"_requests.el"
+				(file-name-directory load-file-name))))
+			    (read (current-buffer))))
   (defconst xlsp-notifications (with-temp-buffer
-                                (save-excursion (insert-file-contents "_notifications.el"))
-                                (read (current-buffer))))
+                                 (save-excursion
+				   (insert-file-contents
+				    (expand-file-name
+				     "_notifications.el"
+				     (file-name-directory load-file-name))))
+                                 (read (current-buffer))))
   (defconst xlsp-structures (with-temp-buffer
-                             (save-excursion (insert-file-contents "_structures.el"))
-                             (read (current-buffer))))
+                              (save-excursion
+				(insert-file-contents
+				 (expand-file-name
+				  "_structures.el"
+				  (file-name-directory load-file-name)))
+				(read (current-buffer)))))
   (defconst xlsp-enumerations (with-temp-buffer
-                               (save-excursion (insert-file-contents "_enumerations.el"))
-                               (read (current-buffer))))
+				(save-excursion
+				  (insert-file-contents
+				   (expand-file-name
+				    "_enumerations.el"
+				    (file-name-directory load-file-name)))
+				  (read (current-buffer)))))
 
   (defun xlsp-structure (alist)
     (let-alist alist

@@ -47,10 +47,23 @@
 
 ;;; Code:
 
+(eval-when-compile
+  (when (< emacs-major-version 28)
+    (defvar xlsp--synchronize-closure)
+    (defvar xlsp--did-change-text-document)
+    (defvar xlsp--did-save-text-document)
+    (defvar xlsp--did-open-text-document)
+    (defvar xlsp--did-close-text-document))
+  (when (< emacs-major-version 29)
+    (defun seq-keep (function sequence)
+      "Apply FUNCTION to SEQUENCE and return all non-nil results."
+      (delq nil (seq-map function sequence)))))
+
 (require 'filenotify)
 (require 'project)
 (require 'xlsp-handle-request)
 (require 'xlsp-handle-notification)
+(require 'xlsp-company)
 
 ;; Commercial Emacs only
 (declare-function tree-sitter-node-type "tree-sitter")
@@ -200,10 +213,39 @@ PositionEncodingKind currently disregarded."
                            'jsonrpc-request))
               ,@args)))
 
+(defalias 'xlsp-default-completion-filter
+  (lambda (query items)
+    (cl-loop
+     for item in items
+     when (string-prefix-p query (xlsp-struct-completion-item-filter-text item)
+                           :ignore-case)
+     collect item)))
+
+(defvar xlsp-completion-filter-function (symbol-function 'xlsp-default-completion-filter)
+  "Up to you.")
+
+(defalias 'xlsp-flx-completion-filter-function
+  (lambda (query items)
+    "By Lewang."
+    (cl-flet ((flx-regexp (query)
+                (let ((breakdown-str
+                       (mapcar (lambda (c)
+                                 (apply #'string c (when (= (downcase c) c)
+                                                     (list (upcase c)))))
+                               query)))
+                  (concat (format "[%s]" (nth 0 breakdown-str))
+                          (mapconcat (lambda (c)
+                                       (format "[^%s]*[%s]" c c))
+                                     (cdr breakdown-str) "")))))
+      (let ((re (flx-regexp query)))
+        (seq-keep
+         (lambda (item)
+           (let ((text (xlsp-struct-completion-item-filter-text item)))
+             (when (string-match-p re text)
+               item)))
+         items)))))
+
 (defun xlsp-do-request-completion (buffer pos callback)
-  "CALLBACK accepts arguments BEG END CACHE-P CANDIDATES.
-The interval [BEG, END) spans the region supplantable by CANDIDATES.
-CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-completion-params
                       :text-document (make-xlsp-struct-text-document-identifier
@@ -217,30 +259,11 @@ CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
     (xlsp-sync-then-request
      buffer conn xlsp-request-text-document/completion
      (xlsp-jsonify params)
-     :deferred t ; if gunslinger fires the instant buffer opens
+     :deferred t ; in case gunslinger fires the instant buffer opens
      :success-fn
      (cl-function
-      (lambda (result-plist
-               &aux (result (xlsp-unjsonify 'xlsp-struct-completion-list
-                                            result-plist)))
-        (let* ((items (append (xlsp-struct-completion-list-items result) nil))
-               (range (xlsp-struct-text-edit-range
-                       (xlsp-struct-completion-item-text-edit (car items))))
-               (beg (xlsp-our-pos buffer (xlsp-struct-range-start range)))
-               (end (xlsp-our-pos buffer (xlsp-struct-range-end range)))
-               (extant (with-current-buffer buffer
-                         (buffer-substring-no-properties beg end))))
-          (apply
-           callback
-           (list beg end
-                 (not (xlsp-struct-completion-list-is-incomplete result))
-                 (cl-loop
-                  for item in items
-                  when (cl-search ; :end2 anchors match to start of RESULT
-                        extant
-                        (xlsp-struct-completion-item-filter-text item)
-                        :end2 (length extant))
-                  collect (xlsp-struct-completion-item-filter-text item)))))))
+      (lambda (result-plist)
+        (funcall callback (xlsp-unjsonify 'xlsp-struct-completion-list result-plist))))
      :error-fn
      (lambda (error)
        (xlsp-message "xlsp-do-request-completion: %s (%s)"
@@ -296,25 +319,67 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   (declare-function company-mode "company")
   (declare-function company--contains "company")
 
-  (let* ((candidates-state '((beg . nil) (end . nil) (cache-p . nil)))
+  (let* ((candidates-state `((beg . nil) (end . nil) (cache-p . nil)
+                             (kinds . nil)
+                             (index-of . ,(make-hash-table :test #'equal))))
+         (completion-callback
+          (lambda (state* buffer* cb* completion-list)
+            "The interval [BEG, END) spans the region supplantable by
+CANDIDATES.  KINDS is a list of xlsp-completion-item-kind/* of
+CANDIDATES.  CACHE-P advises `company-calculate-completions'
+whether to cache CANDIDATES."
+            (if-let ((items
+                      (append
+                       (xlsp-struct-completion-list-items completion-list) nil))
+                     (range (xlsp-struct-text-edit-range
+                             (xlsp-struct-completion-item-text-edit (car items))))
+                     (beg (xlsp-our-pos buffer* (xlsp-struct-range-start range)))
+                     (end (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
+                     (extant (with-current-buffer buffer*
+                               (buffer-substring-no-properties beg end)))
+                     (filtered-items
+                      (funcall
+                       (or xlsp-completion-filter-function
+                           (symbol-function 'xlsp-default-completion-filter))
+                       extant items))
+                     (filtered-texts
+                      (mapcar #'xlsp-struct-completion-item-filter-text
+                              filtered-items)))
+                (prog1 (funcall cb* filtered-texts)
+                  ;; don't bother clrhash
+                  ;; (clrhash (alist-get 'index-of state*))
+                  (dotimes (i (length filtered-texts))
+                    (puthash (nth i filtered-texts) i (alist-get 'index-of state*)))
+                  (setf (alist-get 'beg state*) beg
+                        (alist-get 'end state*) end
+                        (alist-get 'cache-p state*) (not (xlsp-struct-completion-list-is-incomplete completion-list))
+                        (alist-get 'kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)))
+              (prog1 (funcall cb* nil)
+                ;; don't bother clrhash
+                ;; (clrhash (alist-get 'index-of state*))
+                (setf (alist-get 'beg state*) nil
+                      (alist-get 'end state*) nil
+                      (alist-get 'cache-p state*) nil
+                      (alist-get 'kinds state*) nil)))))
          (candidates-directive
           (apply-partially
-           (lambda (state* cb &optional query)
-             (if query
-                 (cl-case query
+           (lambda (state* cb &rest query)
+             "Rolled-into-one closure accessor because I hate defvar."
+             (if (null cb)
+                 (cl-case (cl-first query)
                    (:cache-p
                     (alist-get 'cache-p state*))
                    (:beg-end
                     (cons (alist-get 'beg state*) (alist-get 'end state*)))
+                   (:kind
+                    (nth (gethash (cl-second query)
+                                  (alist-get 'index-of state*))
+                         (alist-get 'kinds state*)))
                    (otherwise
-                    (error "Unrecognized query %S" query)))
+                    (error "Unrecognized query %S" (cl-first query))))
                (xlsp-do-request-completion
                 (current-buffer) (point)
-                (lambda (beg end cache-p candidates)
-                  (prog1 (funcall cb candidates)
-                    (setf (alist-get 'beg state*) beg
-                          (alist-get 'end state*) end
-                          (alist-get 'cache-p state*) cache-p))))))
+                (apply-partially completion-callback state* (current-buffer) cb))))
            candidates-state))
          (xlsp-advise-cache
           (lambda (f &rest args)
@@ -340,12 +405,16 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                        (company--contains elt (cdr cur))))
                   (t nil))))
          (backend
-          (lambda (directive &optional _word &rest _args)
+          (lambda (directive &optional candidate &rest _args)
             (cl-case directive
               (candidates
                (cons :async candidates-directive))
               (sorted
                (apply-partially #'identity t))
+              (kind ; keys in company-vscode-icons-mapping
+               (intern-soft
+                (downcase (alist-get (funcall candidates-directive nil :kind candidate)
+                                     xlsp-company-kind-alist))))
               (prefix
                ;; We use the "prefix" directive only to predict whether
                ;; issuing a candidates call will be fruitful.  Only
@@ -563,14 +632,6 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
   `(or (bound-and-true-p ,private)
        (unless ,probe-p
          (set (make-local-variable ',private) ,expr))))
-
-(eval-when-compile
-  (when (< emacs-major-version 28)
-    (defvar xlsp--synchronize-closure)
-    (defvar xlsp--did-change-text-document)
-    (defvar xlsp--did-save-text-document)
-    (defvar xlsp--did-open-text-document)
-    (defvar xlsp--did-close-text-document)))
 
 (defun xlsp-synchronize-closure (&optional probe-p)
   (xlsp-get-closure
