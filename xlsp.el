@@ -27,13 +27,9 @@
 ;; "xemacs" had been (contrary to the popular misconception that it
 ;; referenced X11).
 ;;
-;; Emacs's completion model "capf" came with Blandy's initial revision in
-;; 1991.  It received a facelift in 2008 but the bones remained
-;; largely intact.
-;;
-;; Preservationists laboriously retrofit any new feature to the capf
-;; model, which lacks async and couldn't have foreseen Microsoft's
-;; Language Server Protocol (LSP).  In particular, capf keys off a
+;; Preservationists laboriously hew to the antiquated capf model (Blandy 1991),
+;; which lacks async and couldn't have foreseen Microsoft's Language
+;; Server Protocol (LSP).  In particular, capf keys off a
 ;; client-determined prefix, whilst LSP's notion of the prefix
 ;; originates from the server.
 
@@ -51,6 +47,7 @@
 
 ;;; Code:
 
+(require 'filenotify)
 (require 'project)
 (require 'xlsp-handle-request)
 (require 'xlsp-handle-notification)
@@ -68,7 +65,8 @@
   ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
    (capabilities :initform nil)
    (server-info :initform nil)
-   (buffers :initform nil)))
+   (buffers :initform nil)
+   (watched-files :initform nil)))
 
 (cl-defmethod initialize-instance ((conn xlsp-connection) _slots)
   (cl-call-next-method)
@@ -84,6 +82,10 @@ I use inode in case project directory gets renamed.")
 
 (defvar xlsp--inode-data (make-hash-table)
   "Every time you `xlsp-inode', make a backref to original directory.")
+
+(defsubst xlsp-conn-string (mode project-dir)
+  (format "%s/%s" mode (file-name-nondirectory
+                        (directory-file-name project-dir))))
 
 (defun xlsp-inode (directory)
   (when-let ((inode (file-attribute-inode-number
@@ -245,14 +247,11 @@ CACHE-P advises `company-calculate-completions' whether to cache CANDIDATES."
                      (plist-get error :message)
                      (plist-get error :code))))))
 
-(defun xlsp--capabilities (project-dir)
-  (ignore project-dir)
-  xlsp-default-struct-client-capabilities)
-
 (defcustom xlsp-invocations
   (quote ((c-mode . "clangd")
           (c++-mode . "clangd")
-          (objc-mode . "clangd")))
+          (objc-mode . "clangd")
+          (rust-mode . "rust-analyzer")))
   "Alist values must begin with an executable, e.g., clangd.
 If you need to set environment variables,
 try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
@@ -402,36 +401,50 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
         (when xlsp-mode
           (xlsp-mode -1)))))
 
-  (let ((conn (xlsp-gv-connection conn-key)))
-    (if (and conn (jsonrpc-running-p conn))
-        (jsonrpc-async-request
-         conn
-         xlsp-request-shutdown
-         nil
-         :success-fn
-         (cl-function
-          (lambda (_no-result)
-            (jsonrpc-notify conn xlsp-notification-exit nil)
-            (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-            (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
-         :error-fn
-         (lambda (error)
-           (xlsp-message "%s %s (%s)" xlsp-request-shutdown (plist-get error :message)
-                         (plist-get error :code))))
-      (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-      (when conn
-        (jsonrpc-shutdown conn :cleanup)))))
+  (let ((conn (xlsp-gv-connection conn-key))
+        (extreme-prejudice (lambda (conn-key)
+                             (when-let ((conn (xlsp-gv-connection conn-key)))
+                               (jsonrpc-shutdown conn :cleanup))
+                             (setq xlsp--connections
+                                   (assoc-delete-all conn-key xlsp--connections)))))
+    (if (or (not conn) (not (jsonrpc-running-p conn)))
+        (funcall extreme-prejudice conn-key)
+      (jsonrpc-async-request
+       conn
+       xlsp-request-shutdown
+       nil
+       :success-fn
+       (cl-function
+        (lambda (_no-result)
+          (jsonrpc-notify conn xlsp-notification-exit nil)
+          (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
+          ;; purely as a just-in-case for the Cyberdyne T-800 server
+          (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
+       :error-fn
+       (lambda (error)
+         (xlsp-message "%s %s %s (%s)"
+                       xlsp-request-shutdown
+                       (xlsp-conn-string (car conn-key) project-dir)
+                       (plist-get error :message) (plist-get error :code))
+         (funcall extreme-prejudice conn-key))
+       :timeout
+       2
+       :timeout-fn
+       (lambda ()
+         (xlsp-message "%s %s did not respond"
+                       xlsp-request-shutdown
+                       (xlsp-conn-string (car conn-key) project-dir))
+         (funcall extreme-prejudice conn-key))))))
 
 (defun xlsp--connect (buffer project-dir)
   (when-let
       ((mode (buffer-local-value 'major-mode buffer))
-       (name (format "%s/%s" mode (file-name-nondirectory
-                                   (directory-file-name project-dir))))
+       (name (xlsp-conn-string mode project-dir))
        (initialize-params
         (make-xlsp-struct-initialize-params
          :process-id (emacs-pid)
          :initialization-options (xlsp--initialization-options project-dir)
-         :capabilities (xlsp--capabilities project-dir)
+         :capabilities xlsp-default-struct-client-capabilities
          :workspace-folders (xlsp-array
                              (make-xlsp-struct-workspace-folder
                               :uri (xlsp-urify project-dir)
@@ -565,7 +578,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
     xlsp--synchronize-closure
     (apply-partially
      (cl-function
-      (lambda (synchronize* &key cumulate send save &allow-other-keys)
+      (lambda (synchronize* &key cumulate send save version &allow-other-keys)
         "SYNCHRONIZE* is naturally thread unsafe state."
         (when cumulate
           (push cumulate
@@ -632,7 +645,9 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
               :uri (xlsp-urify
                     (buffer-file-name
                      (xlsp-struct-synchronize-buffer synchronize*)))
-              :version (xlsp-struct-synchronize-version synchronize*))))))))
+              :version (xlsp-struct-synchronize-version synchronize*))))))
+        (when version
+          (xlsp-struct-synchronize-version synchronize*))))
      (make-xlsp-struct-synchronize :buffer (current-buffer)))))
 
 (defun xlsp-did-change-text-document (&optional probe-p)
@@ -702,7 +717,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
           :text-document (make-xlsp-struct-text-document-item
                           :uri (xlsp-urify (buffer-file-name buffer*))
                           :language-id ""
-                          :version 0
+                          :version (funcall (xlsp-synchronize-closure) :version t)
                           :text (with-current-buffer buffer*
                                   (save-restriction
                                     (widen)
@@ -724,7 +739,7 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
           :text-document (make-xlsp-struct-text-document-item
                           :uri (xlsp-urify (buffer-file-name buffer*))
                           :language-id ""
-                          :version 0
+                          :version (funcall (xlsp-synchronize-closure) :version t)
                           :text (with-current-buffer buffer*
                                   (save-restriction
                                     (widen)
@@ -800,11 +815,108 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
                      (eieio-oref conn '-events-buffer))))
     (if (buffer-live-p extant)
         extant
-      (with-current-buffer
-          (get-buffer-create (format " *%s events*" (eieio-oref conn 'name)))
-        (buffer-disable-undo)
-        (setq buffer-read-only t)
-        (eieio-oset conn '-events-buffer (current-buffer))))))
+      (let ((b (get-buffer-create (format " *%s events*" (eieio-oref conn 'name)))))
+        (prog1 b
+          (with-current-buffer b (special-mode))
+          (eieio-oset conn '-events-buffer b))))))
+
+(defun xlsp-glob-eshellify (glob)
+  "Considered `eshell-extended-glob' and friends.
+The problem is that goes from glob to files, and I need converse."
+
+  (let* ((sep (substring (file-name-as-directory ".") -1))
+         (pipeline
+          (list
+           (lambda (x)
+             "{a,b} to (a|b)"
+             (replace-regexp-in-string
+              (concat
+               "\\(\\b{\\|[^\\]{\\)"    ; unescaped left curly brace
+               "\\(.*?\\)"              ; non-greedy between braces
+               "\\([^\\]}\\)")          ; unescaped right curly brace
+              (lambda (match)
+                (concat (save-match-data
+                          (replace-regexp-in-string "{" "(" (match-string 1 match)))
+                        (save-match-data
+                          (replace-regexp-in-string "," "|" (match-string 2 match)))
+                        (save-match-data
+                          (replace-regexp-in-string
+                           "}" ")" (replace-regexp-in-string
+                                    "," "|" (match-string 3 match))))))
+              x nil t))
+           (lambda (x)
+             "[!0-9] to [^0-9]"
+             (replace-regexp-in-string
+              "\\(\\b\\[\\|[^\\]\\[\\)!" ; unescaped [!
+              (lambda (match)
+                (concat (match-string 1 match) "^"))
+              x nil t))
+           (lambda (x)
+             "* to [^/]*"
+             (replace-regexp-in-string
+              "\\(\\b\\*\\b\\|\\b\\*\\([^*]\\)\\)" ; starting * that's not **
+              (lambda (match)
+                (concat "[^"
+                        sep
+                        "]+"
+                        (or (match-string 2 match) "")))
+              x nil t))
+           (lambda (x)
+             "* to [^/]*"
+             (replace-regexp-in-string
+              "\\([^\\])\\*\\([^*]\\)"  ; unescaped * that's not **
+              (lambda (match)
+                (concat (match-string 1 match)
+                        "[^"
+                        sep
+                        "]+"
+                        (match-string 2 match)))
+              x nil t))
+           (lambda (x)
+             "** to .*"
+             (replace-regexp-in-string
+              "\\(\\b\\*\\*\\|\\([^\\]\\)\\*\\*\\)" ; unescaped **
+              (lambda (match)
+                (concat (or (match-string 2 match) "") ".*"))
+              x nil t))
+
+           (lambda (x)
+             "? to [^/]"
+             (replace-regexp-in-string
+              "\\(\\b\\?\\|\\([^\\]\\)\\?\\)" ; unescaped ?
+              (lambda (match)
+                (concat (or (match-string 2 match) "")
+                        "[^"
+                        sep
+                        "]"))
+              x nil t)))))
+    (let ((result glob))
+      (dolist (f pipeline)
+        (setq result (funcall f result)))
+      result)))
+
+(defun xlsp-connection-register-watched-files (conn reg)
+  (cl-macrolet ((gv (id) `(alist-get ,id (oref conn watched-files))))
+    (let ((id (intern (xlsp-struct-registration-id reg))))
+      (xlsp-connection-unregister-watched-files
+       conn (make-xlsp-struct-unregistration
+             :id (symbol-name id)
+             :method (xlsp-struct-registration-method reg)))
+      (setf (gv id)
+            (seq-keep
+             (lambda (watcher) ; deal with WatchKind later
+               (let ((pat (xlsp-struct-file-system-watcher-glob-pattern watcher)))
+                 (when (stringp pat) ; deal with RelativePattern later
+                   (xlsp-glob-eshellify pat))))
+             (xlsp-struct-did-change-watched-files-registration-options-watchers
+              (xlsp-unjsonify 'xlsp-struct-did-change-watched-files-registration-options
+                              (xlsp-struct-registration-register-options reg))))))))
+
+(defun xlsp-connection-unregister-watched-files (conn unreg)
+  (cl-macrolet ((gv (id) `(alist-get ,id (oref conn watched-files))))
+    (let ((id (intern (xlsp-struct-unregistration-id unreg))))
+      (mapc #'file-notify-rm-watch (gv id))
+      (setf (gv id) (assq-delete-all id (gv id))))))
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
 

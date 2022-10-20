@@ -1,5 +1,7 @@
 export EMACS ?= $(shell which emacs)
 
+.DEFAULT_GOAL := compile
+
 .PHONY: schema
 schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.json
 	$(EMACS) -Q --batch -L . -l xlsp-utils -l pp --eval "                  \

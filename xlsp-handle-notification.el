@@ -31,7 +31,7 @@
 (cl-defgeneric xlsp-handle-notification (conn method params))
 
 (xlsp-register-handler notification xlsp-notification-text-document/publish-diagnostics
-                       (params getter)
-  (getter :uri))
+                       (_conn _params)
+  (ignore))
 
 (provide 'xlsp-handle-notification)
