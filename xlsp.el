@@ -820,80 +820,105 @@ try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
           (with-current-buffer b (special-mode))
           (eieio-oset conn '-events-buffer b))))))
 
-(defun xlsp-glob-eshellify (glob)
+(defun xlsp-glob-to-regexp (their-glob)
   "Considered `eshell-extended-glob' and friends.
 The problem is that goes from glob to files, and I need converse."
-
-  (let* ((sep (substring (file-name-as-directory ".") -1))
-         (pipeline
-          (list
-           (lambda (x)
-             "{a,b} to (a|b)"
-             (replace-regexp-in-string
-              (concat
-               "\\(\\b{\\|[^\\]{\\)"    ; unescaped left curly brace
-               "\\(.*?\\)"              ; non-greedy between braces
-               "\\([^\\]}\\)")          ; unescaped right curly brace
-              (lambda (match)
-                (concat (save-match-data
-                          (replace-regexp-in-string "{" "(" (match-string 1 match)))
-                        (save-match-data
-                          (replace-regexp-in-string "," "|" (match-string 2 match)))
-                        (save-match-data
-                          (replace-regexp-in-string
-                           "}" ")" (replace-regexp-in-string
-                                    "," "|" (match-string 3 match))))))
-              x nil t))
-           (lambda (x)
-             "[!0-9] to [^0-9]"
-             (replace-regexp-in-string
-              "\\(\\b\\[\\|[^\\]\\[\\)!" ; unescaped [!
-              (lambda (match)
-                (concat (match-string 1 match) "^"))
-              x nil t))
-           (lambda (x)
-             "* to [^/]*"
-             (replace-regexp-in-string
-              "\\(\\b\\*\\b\\|\\b\\*\\([^*]\\)\\)" ; starting * that's not **
-              (lambda (match)
-                (concat "[^"
-                        sep
-                        "]+"
-                        (or (match-string 2 match) "")))
-              x nil t))
-           (lambda (x)
-             "* to [^/]*"
-             (replace-regexp-in-string
-              "\\([^\\])\\*\\([^*]\\)"  ; unescaped * that's not **
-              (lambda (match)
-                (concat (match-string 1 match)
-                        "[^"
-                        sep
-                        "]+"
-                        (match-string 2 match)))
-              x nil t))
-           (lambda (x)
-             "** to .*"
-             (replace-regexp-in-string
-              "\\(\\b\\*\\*\\|\\([^\\]\\)\\*\\*\\)" ; unescaped **
-              (lambda (match)
-                (concat (or (match-string 2 match) "") ".*"))
-              x nil t))
-
-           (lambda (x)
-             "? to [^/]"
-             (replace-regexp-in-string
-              "\\(\\b\\?\\|\\([^\\]\\)\\?\\)" ; unescaped ?
-              (lambda (match)
-                (concat (or (match-string 2 match) "")
-                        "[^"
-                        sep
-                        "]"))
-              x nil t)))))
-    (let ((result glob))
-      (dolist (f pipeline)
-        (setq result (funcall f result)))
-      result)))
+  (cl-loop with i = 0
+           with sep = (substring (file-name-as-directory ".") -1)
+           with result = ""
+           with regexp-action =
+           (list
+            ;; Because last man wins in a tie,
+            ;; "**" needs to appear after "*", and
+            ;; "**/" needs to appear after "**".
+            (cons (concat
+                   "\\(\\b{\\|[^\\]{\\)" ; unescaped left curly brace
+                   "\\(.*?\\)"           ; non-greedy between braces
+                   "\\([^\\]}\\)")       ; unescaped right curly brace
+                  (lambda (match)
+                    "{a,b} to (a|b).  Bug, {a,[0-9]} becomes (a|\\[0-9])."
+                    (concat
+                     (save-match-data
+                       (replace-regexp-in-string
+                        "{" "\\(" (regexp-quote (match-string 1 match))
+                        nil t))
+                     (save-match-data
+                       (replace-regexp-in-string
+                        "," "\\|" (regexp-quote (match-string 2 match))
+                        nil t))
+                     (save-match-data
+                       (replace-regexp-in-string
+                        "}" "\\)"
+                        (replace-regexp-in-string
+                         "," "\\|" (regexp-quote (match-string 3 match))
+                         nil t)
+                        nil t)))))
+            (cons "\\(\\b\\[\\|\\([^\\]\\)\\[\\)!" ; unescaped [!)
+                  (lambda (match)
+                    "[!0-9] to [^0-9]"
+                    (concat (match-string 1 match) "^")))
+            (cons "\\(\\b\\*\\|\\([^\\]\\)\\*\\)" ; starting or unescaped *
+                  (lambda (match)
+                    "* to [^/]+"
+                    (concat (regexp-quote (or (match-string 2 match) ""))
+                            "[^" sep "]+")))
+            (cons (concat "\\(\\b\\*\\*" ; starting **
+                          "\\|"
+                          "\\([^\\]\\)\\*\\*" ; unescaped **
+                          "\\)")
+                  (lambda (match)
+                    "** to .*"
+                    (concat (regexp-quote (or (match-string 2 match) "")) ".*")))
+            (cons (concat "\\(\\b\\*\\*\\(" sep "\\)" ; starting **/
+                          "\\|"
+                          "\\([^\\]\\)\\*\\*\\(" sep "\\)" ; unescaped **/
+                          "\\)")
+                  (lambda (match)
+                    "**/ to (.*/)?, e.g., a/**/b accepts a/b"
+                    (cond ((match-string 2 match)
+                           (concat ".*" sep))
+                          ((match-string 4 match)
+                           (concat (regexp-quote (or (match-string 3 match) ""))
+                                   (concat "\\(.*" sep "\\)?")))
+                          (t
+                           (concat (regexp-quote (or (match-string 3 match) ""))
+                                   (concat ".*"))))))
+            (cons "\\(\\b\\?\\|\\([^\\]\\)\\?\\)" ; unescaped ?
+                  (lambda (match)
+                    "? to [^/]"
+                    (concat (regexp-quote (or (match-string 2 match) ""))
+                            "[^" sep "]"))))
+           for remaining = (substring their-glob i)
+           for matches = (seq-keep
+                          (lambda (pair)
+                            (cl-destructuring-bind (regexp . action)
+                                pair
+                              (when (string-match regexp remaining)
+                                (cons (match-data) action))))
+                          regexp-action)
+           while (save-match-data
+                   (let ((leftmost (length remaining))
+                         prevailing)
+                     (dolist (match matches)
+                       (cl-destructuring-bind (data . action)
+                           match
+                         (set-match-data data)
+                         (when (< (match-beginning 0) leftmost)
+                           (setq prevailing match))))
+                     (when prevailing
+                       (cl-destructuring-bind (data . action)
+                           prevailing
+                         (set-match-data data)
+                         (let ((match-beg (match-beginning 0))
+                               (match-end (match-end 0))
+                               (replace (funcall action remaining)))
+                           (setq result
+                                 (concat result
+                                         (regexp-quote (substring their-glob i
+                                                                  (+ i match-beg)))
+                                         replace))
+                           (setq i (+ i match-end)))))))
+           finally return (concat "^" result (regexp-quote remaining) "$")))
 
 (defun xlsp-connection-register-watched-files (conn reg)
   (cl-macrolet ((gv (id) `(alist-get ,id (oref conn watched-files))))
@@ -907,7 +932,7 @@ The problem is that goes from glob to files, and I need converse."
              (lambda (watcher) ; deal with WatchKind later
                (let ((pat (xlsp-struct-file-system-watcher-glob-pattern watcher)))
                  (when (stringp pat) ; deal with RelativePattern later
-                   (xlsp-glob-eshellify pat))))
+                   (xlsp-glob-to-regexp pat))))
              (xlsp-struct-did-change-watched-files-registration-options-watchers
               (xlsp-unjsonify 'xlsp-struct-did-change-watched-files-registration-options
                               (xlsp-struct-registration-register-options reg))))))))
