@@ -28,10 +28,14 @@
 (require 'xlsp-utils)
 (require 'xlsp-struct)
 
+(declare-function xlsp-message "xlsp")
 (declare-function xlsp-connection-register-watched-files "xlsp")
 (declare-function xlsp-connection-unregister-watched-files "xlsp")
 
 (cl-defgeneric xlsp-handle-request (conn method params))
+(cl-defmethod xlsp-handle-request (_conn method _params)
+  "Handle unknown."
+  (xlsp-message "Did not handle request %s" method))
 
 (defmacro xlsp-evaluated-case (expr &rest clauses)
   (declare (indent 1) (debug (form &rest (sexp body))))

@@ -23,16 +23,29 @@
 
 ;;; Commentary:
 
+;; Overview
+;; --------
 ;; The "x" in "xlsp" is merely a differentiator, just as the "x" in
 ;; "xemacs" had been (contrary to the popular misconception that it
 ;; referenced X11).
 ;;
+;; Completion
+;; ----------
 ;; Preservationists laboriously hew to the antiquated capf model (Blandy 1991),
 ;; which lacks async and couldn't have foreseen Microsoft's Language
 ;; Server Protocol (LSP).  In particular, capf keys off a
 ;; client-determined prefix, whilst LSP's notion of the prefix
 ;; originates from the server.
 
+;; company-mode's completion model (Schumacher 2009) is only slightly
+;; less obtuse than capf, and its async model is the weakest
+;; imaginable (drop the request altogether if sit-for is interrupted).
+;; But xlsp wasn't about to reimplement a completion front-end, and
+;; threw in with company-mode.  Functions had to be advised in an ugly
+;; way.
+;;
+;; Per-workspace configuration
+;; ---------------------------
 ;; Loitering .dir-locals.el files are a pain in the tuchus.
 ;; If project-specific config is a must, we recommend this pain in
 ;; your .emacs instead:
@@ -47,6 +60,13 @@
 
 ;;; Code:
 
+(require 'filenotify)
+(require 'project)
+(require 'xlsp-handle-request)
+(require 'xlsp-handle-notification)
+(require 'xlsp-company)
+(require 'xlsp-server)
+
 (eval-when-compile
   (when (< emacs-major-version 28)
     (defvar xlsp--synchronize-closure)
@@ -59,20 +79,9 @@
       "Apply FUNCTION to SEQUENCE and return all non-nil results."
       (delq nil (seq-map function sequence)))))
 
-(require 'filenotify)
-(require 'project)
-(require 'xlsp-handle-request)
-(require 'xlsp-handle-notification)
-(require 'xlsp-company)
-
 ;; Commercial Emacs only
 (declare-function tree-sitter-node-type "tree-sitter")
 (declare-function tree-sitter-node-at "tree-sitter")
-
-(defgroup xlsp nil
-  "Language Server Protocol."
-  :prefix "xlsp-"
-  :group 'applications)
 
 (defclass xlsp-connection (jsonrpc-process-connection)
   ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
@@ -270,18 +279,9 @@ PositionEncodingKind currently disregarded."
                      (plist-get error :message)
                      (plist-get error :code))))))
 
-(defcustom xlsp-invocations
-  (quote ((c-mode . "clangd")
-          (c++-mode . "clangd")
-          (objc-mode . "clangd")
-          (rust-mode . "rust-analyzer")))
-  "Alist values must begin with an executable, e.g., clangd.
-If you need to set environment variables,
-try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
-  :type '(alist :key-type symbol :value-type string))
-
 (defcustom xlsp-events-buffer-size (truncate 2e6)
   "Events buffer max size.  Zero for no buffer, nil for infinite."
+  :group 'xlsp
   :type '(choice (const :tag "No limit" nil)
                  (integer :tag "Number of characters")))
 
@@ -336,7 +336,10 @@ whether to cache CANDIDATES."
                      (beg (xlsp-our-pos buffer* (xlsp-struct-range-start range)))
                      (end (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
                      (extant (with-current-buffer buffer*
-                               (buffer-substring-no-properties beg end)))
+                               ;; server often out of sync;
+                               ;; END might have already been deleted.
+                               (ignore-errors (buffer-substring-no-properties
+                                               beg end))))
                      (filtered-items
                       (funcall
                        (or xlsp-completion-filter-function
@@ -427,7 +430,24 @@ whether to cache CANDIDATES."
                              ((derived-mode-p 'prog-mode)
                               (company-in-string-or-comment))
                              (t nil))
-                 (company-grab-symbol)))))))
+                 (if-let ((capabilities
+                           (oref (xlsp-connection-get (current-buffer))
+                                 capabilities))
+                          (triggers
+                           (append
+                            (xlsp-struct-completion-options-trigger-characters
+                             (xlsp-struct-server-capabilities-completion-provider
+                              capabilities))
+                            nil))
+                          (trigger-p
+                           (and (not (zerop (length triggers)))
+                                (memq (char-after
+                                       (max (point-min)
+                                            (1- (- (point)
+                                                   (length (thing-at-point 'symbol))))))
+                                      (mapcar #'string-to-char triggers)))))
+                     (cons (company-grab-symbol) t)
+                   (company-grab-symbol))))))))
     (if xlsp-mode
         (progn
           (add-function :around (symbol-function 'company-calculate-candidates)
@@ -487,8 +507,8 @@ whether to cache CANDIDATES."
         (lambda (_no-result)
           (jsonrpc-notify conn xlsp-notification-exit nil)
           (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-          ;; purely as a just-in-case for the Cyberdyne T-800 server
-          (run-with-timer 3 nil #'jsonrpc-shutdown conn :cleanup)))
+          (kill-buffer (process-buffer (jsonrpc--process conn)))
+          (kill-buffer (jsonrpc-stderr-buffer conn))))
        :error-fn
        (lambda (error)
          (xlsp-message "%s %s %s (%s)"
@@ -518,7 +538,7 @@ whether to cache CANDIDATES."
                              (make-xlsp-struct-workspace-folder
                               :uri (xlsp-urify project-dir)
                               :name project-dir))))
-       (command (alist-get mode xlsp-invocations))
+       (command (alist-get mode xlsp-server-invocations))
        (process (make-process
                  :name name
                  :command (split-string command)
@@ -1011,7 +1031,7 @@ The problem is that goes from glob to files, and I need converse."
   xlsp-mode
   (lambda ()
     (when (and (buffer-file-name)
-               (alist-get major-mode xlsp-invocations))
+               (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
   :group 'xlsp
   :version "29.1")

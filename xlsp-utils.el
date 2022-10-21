@@ -29,6 +29,11 @@
 (require 'url-util)
 (require 'jsonrpc)
 
+(defgroup xlsp nil
+  "Language Server Protocol."
+  :prefix "xlsp-"
+  :group 'applications)
+
 (defun xlsp-urify (path)
   "RFC3986, like all RFCs, are write-only.
 https://microsoft.github.io/language-server-protocol/specifications/\\
