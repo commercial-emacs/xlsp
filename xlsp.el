@@ -472,6 +472,7 @@ whether to cache CANDIDATES."
               (ignore "Presume async handshake will install hooks."))))
       ;; those add-functions are forever...
       (xlsp-toggle-hooks nil)
+      (xlsp-deregister-buffer (current-buffer))
       (unless global-company-mode
         (company-mode -1))
       (kill-local-variable 'company-backends)
@@ -828,8 +829,19 @@ whether to cache CANDIDATES."
                                      (point-min) (point-max)))))))))
      (current-buffer))))
 
+(defun xlsp-deregister-buffer (buffer)
+  "Dispose connection if last registered buffer."
+  (when-let ((conn (xlsp-connection-get buffer)))
+    (oset conn buffers (delq buffer
+                             (cl-remove-if-not
+                              #'buffer-live-p
+                              (oref conn buffers))))
+    (unless (oref conn buffers)
+      (xlsp-connection-remove buffer))))
+
 (defalias 'xlsp-toggle-hooks
   (lambda (conn)
+    "Truthiness of CONN is tantamount to on/off."
     (let ((did-change-predicate
            (lambda (conn)
              (let ((kind (xlsp-capability conn
@@ -847,6 +859,7 @@ whether to cache CANDIDATES."
                xlsp-struct-server-capabilities-text-document-sync
                xlsp-struct-text-document-sync-options-open-close))))
       (dolist (entry
+               ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
                `([before-change-functions
                   ,did-change-predicate
                   xlsp-did-change-text-document]
@@ -862,16 +875,8 @@ whether to cache CANDIDATES."
                   -2]
                  [kill-buffer-hook
                   identity
-                  (lambda (&rest _args) ; for the closure
-                    (lambda () ; for the actual hook
-                      "Dispose connection if last registered buffer."
-                      (when-let ((conn (xlsp-connection-get (current-buffer))))
-                        (oset conn buffers (delq (current-buffer)
-                                                 (cl-remove-if-not
-                                                  #'buffer-live-p
-                                                  (oref conn buffers))))
-                        (unless (oref conn buffers)
-                          (xlsp-connection-remove (current-buffer))))))
+                  (lambda (&optional probe-p) ; for the closure
+                    (apply-partially #'xlsp-deregister-buffer (current-buffer)))
                   2]
                  [before-revert-hook
                   ,did-open-close-predicate
