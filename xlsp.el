@@ -277,7 +277,7 @@ PositionEncodingKind currently disregarded."
     (xlsp-sync-then-request
      buffer conn xlsp-request-text-document/completion
      (xlsp-jsonify params)
-     :deferred t ; in case gunslinger fires the instant buffer opens
+     :deferred xlsp-request-text-document/completion
      :success-fn
      (cl-function
       (lambda (result-plist)
@@ -323,27 +323,19 @@ PositionEncodingKind currently disregarded."
   (defvar company-minimum-prefix-length)
   (defvar company-mode)
   (defvar global-company-mode)
-  (defvar company-point)
-  (defvar company-idle-delay)
-  (defvar company-candidates)
-  (declare-function company-call-frontends "company")
-  (declare-function company-cancel "company")
-  (declare-function company--perform "company")
   (declare-function company-grab-symbol "company")
   (declare-function company-in-string-or-comment "company")
   (declare-function company-mode "company")
   (declare-function company--contains "company")
-  (declare-function company-install-map "company")
-  (declare-function company--should-begin "company")
-  (declare-function company--idle-delay "company")
-
-  (let* ((completion-callback
-          (lambda (state* buffer* cb* completion-list)
+  (let* ((candidates-state `((beg . nil) (end . nil) (cache-p . nil)
+                             (kinds . nil) (trigger-char . nil)
+                             (index-of . ,(make-hash-table :test #'equal))))
+         (completion-callback
+          (lambda (buffer* cb* completion-list)
             "The interval [BEG, END) spans the region supplantable by
 CANDIDATES.  KINDS is a list of xlsp-completion-item-kind/* of
 CANDIDATES.  CACHE-P advises `company-calculate-completions'
-whether to cache CANDIDATES. LAST is unixtime ms of last server request
-used for debouncing."
+whether to cache CANDIDATES."
             (if-let ((items
                       (append
                        (xlsp-struct-completion-list-items completion-list) nil))
@@ -365,51 +357,26 @@ used for debouncing."
                               filtered-items)))
                 (prog1 (funcall cb* filtered-texts)
                   ;; don't bother clrhash
-                  ;; (clrhash (alist-get 'index-of state*))
+                  ;; (clrhash (alist-get 'index-of candidates-state))
                   (dotimes (i (length filtered-texts))
-                    (puthash (nth i filtered-texts) i (alist-get 'index-of state*)))
-                  (setf (alist-get 'beg state*) beg
-                        (alist-get 'end state*) end
-                        (alist-get 'cache-p state*) (not (xlsp-struct-completion-list-is-incomplete completion-list))
-                        (alist-get 'kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)))
+                    (puthash (nth i filtered-texts) i (alist-get 'index-of candidates-state)))
+                 (setf (alist-get 'beg candidates-state) beg
+                       (alist-get 'end candidates-state) end
+                       (alist-get 'cache-p candidates-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
+                       (alist-get 'kinds candidates-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)))
               (prog1 (funcall cb* nil)
                 ;; don't bother clrhash
-                ;; (clrhash (alist-get 'index-of state*))
-                (setf (alist-get 'beg state*) nil
-                      (alist-get 'end state*) nil
-                      (alist-get 'cache-p state*) nil
-                      (alist-get 'kinds state*) nil)))))
-         (candidates-state `((beg . nil) (end . nil) (cache-p . nil)
-                             (kinds . nil) (trigger-char . nil)
-                             (index-of . ,(make-hash-table :test #'equal))))
+                ;; (clrhash (alist-get 'index-of candidates-state))
+                (setf (alist-get 'beg candidates-state) nil
+                      (alist-get 'end candidates-state) nil
+                      (alist-get 'cache-p candidates-state) nil
+                      (alist-get 'kinds candidates-state) nil)))))
          (candidates-directive
-          (apply-partially
-           (lambda (state* cb)
-             (xlsp-do-request-completion
-              (current-buffer) (point)
-              (apply-partially completion-callback state* (current-buffer) cb)
-              (alist-get 'trigger-char state*)))
-           candidates-state))
-         (xlsp-advise-post
-          (lambda (f &rest args)
-            "The default company-post-command is ridonk."
-            (if (not xlsp-mode)
-                (apply f args)
-              (unless (equal (point) company-point)
-                ;; House-keeping run for company--continue
-                ;; Null `company-idle-delay' prevents company--begin-new
-                (let (company-idle-delay)
-                  (company--perform)))
-              (when (and (not company-candidates)
-                         (numberp (company--idle-delay))
-                         (not defining-kbd-macro)
-                         (company--should-begin))
-                (let ((company-idle-delay 'now))
-                  (company--perform)))
-              (when company-candidates
-                ;; Smoke'em if you got'em.
-                (company-call-frontends 'post-command)
-                (company-install-map)))))
+          (lambda (cb)
+            (xlsp-do-request-completion
+             (current-buffer) (point)
+             (apply-partially completion-callback (current-buffer) cb)
+             (alist-get 'trigger-char candidates-state))))
          (xlsp-advise-cache
           (lambda (f &rest args)
             "LSP said isIncomplete.  So undo the caching."
@@ -448,7 +415,7 @@ used for debouncing."
                 (downcase (alist-get
                            (nth (gethash candidate
                                          (alist-get 'index-of candidates-state))
-                                (alist-get 'kinds state*))
+                                (alist-get 'kinds candidates-state))
                            xlsp-company-kind-alist))))
               (prefix
                ;; We use the "prefix" directive only to predict whether
@@ -462,22 +429,25 @@ used for debouncing."
                              ((derived-mode-p 'prog-mode)
                               (company-in-string-or-comment))
                              (t nil))
-                 (let (trigger-char)
-                   (when-let ((capabilities
-                               (oref (xlsp-connection-get (current-buffer))
-                                     capabilities))
-                              (triggers
-                               (append
-                                (xlsp-struct-completion-options-trigger-characters
-                                 (xlsp-struct-server-capabilities-completion-provider
-                                  capabilities))
-                                nil)))
-                     (setq trigger-char
-                           (car (memq (char-after (max (point-min) (1- (point))))
-                                      (mapcar #'string-to-char triggers)))))
-                   (setf (alist-get 'trigger-char candidates-state) trigger-char))
-                 (cons (company-grab-symbol)
-                       (when (alist-get 'trigger-char candidates-state) t))))))))
+                 (let ((word (company-grab-symbol)))
+                   (if-let ((capabilities
+                             (oref (xlsp-connection-get (current-buffer))
+                                   capabilities))
+                            (triggers
+                             (append
+                              (xlsp-struct-completion-options-trigger-characters
+                               (xlsp-struct-server-capabilities-completion-provider
+                                capabilities))
+                              nil))
+                            (trigger-char
+                             (car (memq (char-after (max (point-min) (1- (point))))
+                                        (mapcar #'string-to-char triggers)))))
+                       (cons word
+                             (setf (alist-get 'trigger-char candidates-state)
+                                   trigger-char))
+                     (prog1 word
+                       (setf (alist-get 'trigger-char candidates-state)
+                             nil))))))))))
     (if xlsp-mode
         (progn
           (add-function :around (symbol-function 'company-calculate-candidates)
@@ -521,12 +491,20 @@ used for debouncing."
         (when xlsp-mode
           (xlsp-mode -1)))))
 
-  (let ((conn (xlsp-gv-connection conn-key))
-        (extreme-prejudice (lambda (conn-key)
-                             (when-let ((conn (xlsp-gv-connection conn-key)))
-                               (jsonrpc-shutdown conn :cleanup))
-                             (setq xlsp--connections
-                                   (assoc-delete-all conn-key xlsp--connections)))))
+  (let* ((conn (xlsp-gv-connection conn-key))
+         (workaround (lambda (conn)
+                       (mapc #'kill-buffer
+                             (delq nil
+                                   (list (process-buffer (jsonrpc--process conn))
+                                         (jsonrpc-stderr-buffer conn))))))
+         (extreme-prejudice (lambda (conn-key)
+                              (when-let ((conn (xlsp-gv-connection conn-key)))
+                                (run-at-time  ; workaround in lieu of 54ce56f
+                                 3 nil
+                                 (apply-partially workaround conn))
+                                (jsonrpc-shutdown conn))
+                              (setq xlsp--connections
+                                    (assoc-delete-all conn-key xlsp--connections)))))
     (if (or (not conn) (not (jsonrpc-running-p conn)))
         (funcall extreme-prejudice conn-key)
       (jsonrpc-async-request
@@ -537,9 +515,7 @@ used for debouncing."
        (cl-function
         (lambda (_no-result)
           (jsonrpc-notify conn xlsp-notification-exit nil)
-          (setq xlsp--connections (assoc-delete-all conn-key xlsp--connections))
-          (kill-buffer (process-buffer (jsonrpc--process conn)))
-          (kill-buffer (jsonrpc-stderr-buffer conn))))
+          (funcall workaround conn)))
        :error-fn
        (lambda (error)
          (xlsp-message "%s %s %s (%s)"
@@ -600,6 +576,7 @@ used for debouncing."
          conn
          xlsp-request-initialize
          (xlsp-jsonify initialize-params)
+         :deferred xlsp-request-initialize
          :success-fn
          (cl-function
           (lambda (result-plist
