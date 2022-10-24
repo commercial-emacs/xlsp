@@ -277,7 +277,6 @@ PositionEncodingKind currently disregarded."
     (xlsp-sync-then-request
      buffer conn xlsp-request-text-document/completion
      (xlsp-jsonify params)
-     :deferred xlsp-request-text-document/completion
      :success-fn
      (cl-function
       (lambda (result-plist)
@@ -328,7 +327,7 @@ PositionEncodingKind currently disregarded."
   (declare-function company-mode "company")
   (declare-function company--contains "company")
   (let* ((candidates-state `((beg . nil) (end . nil) (cache-p . nil)
-                             (kinds . nil) (trigger-char . nil)
+                             (kinds . nil) (details . nil) (trigger-char . nil)
                              (index-of . ,(make-hash-table :test #'equal))))
          (completion-callback
           (lambda (buffer* cb* completion-list)
@@ -363,14 +362,16 @@ whether to cache CANDIDATES."
                  (setf (alist-get 'beg candidates-state) beg
                        (alist-get 'end candidates-state) end
                        (alist-get 'cache-p candidates-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
-                       (alist-get 'kinds candidates-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)))
+                       (alist-get 'kinds candidates-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
+                       (alist-get 'details candidates-state) (mapcar #'xlsp-struct-completion-item-detail filtered-items)))
               (prog1 (funcall cb* nil)
                 ;; don't bother clrhash
                 ;; (clrhash (alist-get 'index-of candidates-state))
                 (setf (alist-get 'beg candidates-state) nil
                       (alist-get 'end candidates-state) nil
                       (alist-get 'cache-p candidates-state) nil
-                      (alist-get 'kinds candidates-state) nil)))))
+                      (alist-get 'kinds candidates-state) nil
+                      (alist-get 'details candidates-state) nil)))))
          (candidates-directive
           (lambda (cb)
             (xlsp-do-request-completion
@@ -410,6 +411,12 @@ whether to cache CANDIDATES."
                (cons :async candidates-directive))
               (sorted
                (apply-partially #'identity t))
+              (annotation
+               (if-let ((detail (nth (gethash candidate
+                                              (alist-get 'index-of candidates-state))
+                                     (alist-get 'details candidates-state))))
+                   (concat " " (propertize
+                                detail 'face 'font-lock-function-name-face))))
               (kind ; keys in company-vscode-icons-mapping
                (intern-soft
                 (downcase (alist-get
@@ -462,7 +469,9 @@ whether to cache CANDIDATES."
                           '((name . ,(xlsp-advise-tag xlsp-advise-contains)))))
           (setq-local company-backends company-backends)
           (cl-pushnew backend company-backends)
-          (setq-local company-minimum-prefix-length 3)
+          (setq-local company-minimum-prefix-length 3
+                      company-tooltip-idle-delay 0.5
+                      company-idle-delay 0.5)
           (unless company-mode
             (company-mode))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
@@ -576,7 +585,6 @@ whether to cache CANDIDATES."
          conn
          xlsp-request-initialize
          (xlsp-jsonify initialize-params)
-         :deferred xlsp-request-initialize
          :success-fn
          (cl-function
           (lambda (result-plist
