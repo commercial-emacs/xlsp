@@ -93,9 +93,17 @@
 (cl-defmethod initialize-instance ((conn xlsp-connection) _slots)
   (cl-call-next-method)
   (add-function :around (process-sentinel (jsonrpc--process conn))
-                (lambda (f &rest args)
-                  (let ((inhibit-message t))
-                    (apply f args)))
+                (lambda (f proc change &rest args)
+                  "jsonrpc--message should not usurp echo area."
+                  (cl-letf (((symbol-function 'jsonrpc--message) #'ignore))
+                    ;; inhibit-message not cutting it
+                    (prog1 (apply f proc change args)
+                      (when-let ((conn (process-get proc 'jsonrpc-connection))
+                                 (died-p (not (process-live-p proc))))
+                        (display-warning
+                         'xlsp
+                         (format "%s, %s" (process-name proc) change)
+                         :warning)))))
                 '((name . "xlsp-advise-sentinel"))))
 
 (defvar xlsp--connections nil
@@ -320,6 +328,8 @@ PositionEncodingKind currently disregarded."
   (defvar company-candidates-cache)
   (defvar company-backends)
   (defvar company-minimum-prefix-length)
+  (defvar company-tooltip-idle-delay)
+  (defvar company-idle-delay)
   (defvar company-mode)
   (defvar global-company-mode)
   (declare-function company-grab-symbol "company")
@@ -399,11 +409,13 @@ whether to cache CANDIDATES."
          (xlsp-advise-contains
           (lambda (elt cur)
             "Closures contain dotted pairs (symbol . compiled-function)."
-            (cond ((eq elt cur) t)
-                  ((consp cur)
-                   (or (company--contains elt (car cur))
-                       (company--contains elt (cdr cur))))
-                  (t nil))))
+            (cl-labels ((recurse (elt cur)
+                          (cond ((eq elt cur) t)
+                                ((consp cur)
+                                 (or (recurse elt (car cur))
+                                     (recurse elt (cdr cur))))
+                                (t nil))))
+              (recurse elt cur))))
          (backend
           (lambda (directive &optional candidate &rest _args)
             (cl-case directive
@@ -459,19 +471,26 @@ whether to cache CANDIDATES."
         (progn
           (add-function :around (symbol-function 'company-calculate-candidates)
                         xlsp-advise-cache
-                        '((name . ,(xlsp-advise-tag xlsp-advise-cache))))
+                        `((name . ,(xlsp-advise-tag xlsp-advise-cache))))
           (add-function :before (symbol-function 'company-update-candidates)
                         xlsp-advise-prefix
                         `((name . ,(xlsp-advise-tag xlsp-advise-prefix))))
           (when (fboundp 'company--contains)
             (add-function :override (symbol-function 'company--contains)
                           xlsp-advise-contains
-                          '((name . ,(xlsp-advise-tag xlsp-advise-contains)))))
+                          `((name . ,(xlsp-advise-tag xlsp-advise-contains)))))
           (setq-local company-backends company-backends)
           (cl-pushnew backend company-backends)
-          (setq-local company-minimum-prefix-length 3
-                      company-tooltip-idle-delay 0.5
-                      company-idle-delay 0.5)
+          (cl-macrolet ((unchanged-p
+                          (var)
+                          `(eq (symbol-value ',var)
+                               (car (get ',var 'standard-value)))))
+            (unless (unchanged-p company-minimum-prefix-length)
+              (setq-local company-minimum-prefix-length 3))
+            (unless (unchanged-p company-tooltip-idle-delay)
+              (setq-local company-tooltip-idle-delay 0.5))
+            (unless (unchanged-p company-idle-delay)
+              (setq-local company-idle-delay 0.6)))
           (unless company-mode
             (company-mode))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
@@ -500,46 +519,38 @@ whether to cache CANDIDATES."
         (when xlsp-mode
           (xlsp-mode -1)))))
 
-  (let* ((conn (xlsp-gv-connection conn-key))
-         (workaround (lambda (conn)
-                       (mapc #'kill-buffer
-                             (delq nil
-                                   (list (process-buffer (jsonrpc--process conn))
-                                         (jsonrpc-stderr-buffer conn))))))
-         (extreme-prejudice (lambda (conn-key)
-                              (when-let ((conn (xlsp-gv-connection conn-key)))
-                                (run-at-time  ; workaround in lieu of 54ce56f
-                                 3 nil
-                                 (apply-partially workaround conn))
-                                (jsonrpc-shutdown conn))
-                              (setq xlsp--connections
-                                    (assoc-delete-all conn-key xlsp--connections)))))
-    (if (or (not conn) (not (jsonrpc-running-p conn)))
-        (funcall extreme-prejudice conn-key)
+  (let* ((conn (xlsp-gv-connection conn-key)))
+    (when (and conn (jsonrpc-running-p conn))
       (jsonrpc-async-request
        conn
        xlsp-request-shutdown
        nil
-       :success-fn
-       (cl-function
-        (lambda (_no-result)
-          (jsonrpc-notify conn xlsp-notification-exit nil)
-          (funcall workaround conn)))
        :error-fn
        (lambda (error)
          (xlsp-message "%s %s %s (%s)"
                        xlsp-request-shutdown
                        (xlsp-conn-string (car conn-key) project-dir)
-                       (plist-get error :message) (plist-get error :code))
-         (funcall extreme-prejudice conn-key))
+                       (plist-get error :message) (plist-get error :code)))
        :timeout
        2
        :timeout-fn
        (lambda ()
          (xlsp-message "%s %s did not respond"
                        xlsp-request-shutdown
-                       (xlsp-conn-string (car conn-key) project-dir))
-         (funcall extreme-prejudice conn-key))))))
+                       (xlsp-conn-string (car conn-key) project-dir))))
+
+      ;; eglot got this right by just firing off the exit notification
+      ;; sight unseen.  Ideally it'd issue from the success-fn callback
+      ;; of xlsp-request-shutdown, but jsonrpc--process-filter
+      ;; triggers that callback, which could kill the connection,
+      ;; and jsonrpc--process-filter lives in connection's buffer.
+      ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
+      (jsonrpc-notify conn xlsp-notification-exit nil))
+
+    (cl-letf (((symbol-function 'display-warning) #'ignore))
+      (when conn (jsonrpc-shutdown conn :cleanup)))
+    (setq xlsp--connections
+          (assoc-delete-all conn-key xlsp--connections))))
 
 (defun xlsp--connect (buffer project-dir)
   (when-let
@@ -751,48 +762,46 @@ whether to cache CANDIDATES."
   (xlsp-get-closure
     probe-p
     xlsp--did-change-text-document
-    (let ((state-empty
-           '((character-offset . nil) (line-offset . nil) (snippet . nil))))
-      (apply-partially
-       (lambda (before-state* beg end &optional deleted)
-         "BEFORE-STATE* is naturally thread unsafe."
-         (cl-flet ((get-row-col (pos)
-                     (let ((send-pos
-                            (with-temp-buffer
-                              (save-excursion
-                                (insert (alist-get 'snippet before-state*)))
-                              (xlsp-their-pos (current-buffer) (min pos (point-max))))))
-                       (make-xlsp-struct-position
-                        :line (+ (alist-get 'line-offset before-state*)
-                                 (car send-pos))
-                        :character (cdr send-pos)))))
-           (if (not deleted)
-               ;; In `before-change-functions'
-               (save-excursion
-                 (goto-char beg)
-                 (save-restriction
-                   (widen)
-                   (setf (alist-get 'character-offset before-state*)
-                         (- beg (line-beginning-position))
-                         (alist-get 'line-offset before-state*)
-                         (1- (line-number-at-pos beg))
-                         (alist-get 'snippet before-state*)
-                         (buffer-substring-no-properties (line-beginning-position)
-                                                         end))))
-             ;; In `after-change-functions'
-             (let ((pos (1+ (alist-get 'character-offset before-state*))))
-               (funcall
-                (xlsp-synchronize-closure)
-                :cumulate
-                (xlsp-literal
-                 :range (xlsp-jsonify
-                         (make-xlsp-struct-range
-                          ;; get-row-col POS is one-indexed
-                          :start (get-row-col pos)
-                          :end (get-row-col (+ pos deleted))))
-                 :text (buffer-substring-no-properties beg end))))
-             (setq before-state* state-empty))))
-       state-empty))))
+    (let* ((state-empty '((character-offset . nil) (line-offset . nil) (snippet . nil)))
+           (before-state* state-empty))
+      (lambda (beg end &optional deleted)
+        "BEFORE-STATE* is naturally thread unsafe."
+        (cl-flet ((get-row-col (pos)
+                    (let ((send-pos
+                           (with-temp-buffer
+                             (save-excursion
+                               (insert (alist-get 'snippet before-state*)))
+                             (xlsp-their-pos (current-buffer) (min pos (point-max))))))
+                      (make-xlsp-struct-position
+                       :line (+ (alist-get 'line-offset before-state*)
+                                (car send-pos))
+                       :character (cdr send-pos)))))
+          (if (not deleted)
+              ;; In `before-change-functions'
+              (save-excursion
+                (goto-char beg)
+                (save-restriction
+                  (widen)
+                  (setf (alist-get 'character-offset before-state*)
+                        (- beg (line-beginning-position))
+                        (alist-get 'line-offset before-state*)
+                        (1- (line-number-at-pos beg))
+                        (alist-get 'snippet before-state*)
+                        (buffer-substring-no-properties (line-beginning-position)
+                                                        end))))
+            ;; In `after-change-functions'
+            (let ((pos (1+ (alist-get 'character-offset before-state*))))
+              (funcall
+               (xlsp-synchronize-closure)
+               :cumulate
+               (xlsp-literal
+                :range (xlsp-jsonify
+                        (make-xlsp-struct-range
+                         ;; get-row-col POS is one-indexed
+                         :start (get-row-col pos)
+                         :end (get-row-col (+ pos deleted))))
+                :text (buffer-substring-no-properties beg end))))
+            (setq before-state* state-empty)))))))
 
 (defun xlsp-did-save-text-document (&optional probe-p)
   (xlsp-get-closure
