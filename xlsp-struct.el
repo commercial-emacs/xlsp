@@ -80,7 +80,7 @@
              ;; could be an enumeration but intern-soft won't work
              (intern (concat "xlsp-struct-" (xlsp-hyphenate .name))))
             (.items
-             (xlsp-structure-type (aref .items 0)))
+             (seq-map #'xlsp-structure-type .items))
             (t (intern (xlsp-hyphenate (or .name .kind)))))))
 
   (defun xlsp-property-type (alist)
@@ -147,6 +147,10 @@
    ;;              xlsp-enumerations))
    xlsp-enumerations)
 
+  (defmacro xlsp--bail (type)
+    "Bail on multiple inheritance for now."
+    `(if (listp ,type) (car ,type) ,type))
+
   (seq-map
    (lambda (entry)
      (let-alist entry
@@ -154,7 +158,7 @@
         `(cl-defstruct (,(intern (xlsp-structure entry))
                         ,@(when-let ((extends .extends))
                             `((:include
-                               ,(xlsp-structure-type (aref extends 0))))))
+                               ,(xlsp--bail (xlsp-structure-type (aref extends 0)))))))
            ,@(when (stringp .documentation) (list .documentation))
            ,@(cl-mapcan #'identity
                         (seq-map
@@ -197,12 +201,13 @@
            (params
             nil
             :read-only t
-            :type ,(xlsp-structure-type .params))
+            :type ,(xlsp--bail (xlsp-structure-type .params)))
            ,@(when .registrationOptions
                `((registration-options
                   nil
                   :read-only t
-                  :type ,(xlsp-structure-type .registrationOptions))))))))
+                  :type ,(xlsp--bail
+                          (xlsp-structure-type .registrationOptions)))))))))
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "workspace/executeCommand" (alist-get 'method x)))
    ;;              xlsp-requests))
@@ -225,19 +230,17 @@
            (params
             nil
             :read-only t
-            :type ,(xlsp-structure-type .params))
+            :type ,(xlsp--bail (xlsp-structure-type .params)))
            ,@(when .registrationOptions
                `((registration-options
                   nil
                   :read-only t
-                  :type ,(xlsp-structure-type .registrationOptions))))))))
+                  :type ,(xlsp--bail (xlsp-structure-type .registrationOptions)))))))))
    ;; (make-vector
    ;;  1 (seq-find (lambda (x) (equal "telemetry/event"
    ;;                                 (alist-get 'method x)))
    ;;              xlsp-notifications))
    xlsp-notifications))
-
-(defconst xlsp-struct-empty (make-hash-table :size 1))
 
 (defun xlsp-literal (&rest args)
   (apply #'list args))
@@ -265,7 +268,7 @@
                    (value (funcall getter obj)))
           (setq result (json-add-to-object
                         result (xlsp-unhyphenate slot t) (xlsp-jsonify value)))))
-      (or result xlsp-struct-empty)))))
+      result))))
 
 (defun xlsp-unjsonify (struct-type json)
   "Go from json-object-type (plist) to xlsp-struct."
@@ -281,7 +284,7 @@
           (when-let ((our-kw (intern (concat ":" (symbol-name sym))))
                      (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
                                                                      :as-slot))))
-                     (value (plist-get json their-kw)))
+                     (value (ignore-errors (plist-get json their-kw))))
             (setq arguments
                   (nconc arguments
                          (list our-kw
@@ -292,6 +295,38 @@
                                           (lambda (elem)
                                             (xlsp-unjsonify property-type elem))
                                           value)))
+                                 ((pred listp)
+                                  (cond ((not (listp value))
+                                         ;; assume non-struct or-type
+                                         (xlsp-unjsonify
+                                          (seq-find
+                                           (lambda (or-type)
+                                             (not (get or-type 'cl--class)))
+                                           type)
+                                          value))
+                                        (t
+                                         ;; pick the or-type that
+                                         ;; results in a non-trivial
+                                         ;; struct with a non-nil
+                                         ;; field.
+                                         (or
+                                          (cl-some
+                                           (lambda (or-type)
+                                             (let ((cand (xlsp-unjsonify or-type value)))
+                                               (cl-some
+                                                (lambda (slot)
+                                                  (and
+                                                   (funcall
+                                                    (intern (format "%s-%s" or-type slot))
+                                                    cand)
+                                                   cand))
+                                                (mapcar #'car
+                                                        (cl-remove-if-not #'cdr (cl-struct-slot-info or-type))))))
+                                           (cl-remove-if-not
+                                            (lambda (or-type)
+                                              (get or-type 'cl--class))
+                                            type))
+                                          (xlsp-unjsonify (car type) value)))))
                                  (_ (xlsp-unjsonify type value)))))))))
       (apply (intern (format "make-%s" struct-type)) arguments))))
 
