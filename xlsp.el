@@ -89,21 +89,88 @@
    (buffers :initform nil)
    (watched-files :initform nil)))
 
+(defmacro xlsp-advise-tag (variable)
+  `(symbol-name ',variable))
+
 (cl-defmethod initialize-instance ((conn xlsp-connection) _slots)
   (cl-call-next-method)
-  (add-function :around (process-sentinel (jsonrpc--process conn))
-                (lambda (f proc change &rest args)
-                  "jsonrpc--message should not usurp echo area."
-                  (cl-letf (((symbol-function 'jsonrpc--message) #'ignore))
-                    ;; inhibit-message not cutting it
-                    (prog1 (apply f proc change args)
-                      (when-let ((conn (process-get proc 'jsonrpc-connection))
-                                 (died-p (not (process-live-p proc))))
-                        (display-warning
-                         'xlsp
-                         (format "%s, %s" (process-name proc) change)
-                         :warning)))))
-                '((name . "xlsp-advise-sentinel"))))
+  (let ((xlsp-advise-sentinel
+         (lambda (f proc change &rest args)
+           "jsonrpc--message should not usurp echo area."
+           (cl-letf (((symbol-function 'jsonrpc--message) #'ignore))
+             ;; inhibit-message not cutting it
+             (prog1 (apply f proc change args)
+               (when-let ((conn (process-get proc 'jsonrpc-connection))
+                          (died-p (not (process-live-p proc))))
+                 (display-warning
+                  'xlsp
+                  (format "%s, %s" (process-name proc) change)
+                  :warning))))))
+        (xlsp-advise-filter
+         (lambda (proc string)
+           "jsonrpc--process-filter prone to typical output flushing issues."
+           (when (buffer-live-p (process-buffer proc))
+             (with-current-buffer (process-buffer proc)
+               (let ((inhibit-read-only t)
+                     (connection (process-get proc 'jsonrpc-connection)))
+                 ;; Insert the text, advancing the process marker.
+                 (save-excursion
+                   (goto-char (process-mark proc))
+                   (insert string)
+                   (set-marker (process-mark proc) (point)))
+                 (catch 'done
+                   (while t
+                     ;; More than one message might have arrived
+                     (unless (setf (jsonrpc--expected-bytes connection)
+                                   (or (jsonrpc--expected-bytes connection)
+                                       (and (search-forward-regexp
+                                             "\\(?:.*: .*\r\n\\)*Content-Length: \
+*\\([[:digit:]]+\\)\r\n\\(?:.*: .*\r\n\\)*\r\n"
+                                             (+ (point) 100) t)
+                                            (string-to-number (match-string 1)))))
+                       (throw 'done t))
+
+                     ;; Attempt to complete a message body
+                     (let ((available-bytes (- (position-bytes (process-mark proc))
+                                               (position-bytes (point))))
+                           (message-end (byte-to-position
+                                         (+ (position-bytes (point))
+                                            (jsonrpc--expected-bytes connection)))))
+                       (cond ((< available-bytes (jsonrpc--expected-bytes connection))
+                              ;; message still incomplete
+                              (throw 'done t))
+                             ((< (length (buffer-substring-no-properties (point) message-end))
+                                 (- message-end (point)))
+                              ;; output flushing vagaries
+                              (throw 'done t))
+                             (t
+                              (save-restriction
+                                (narrow-to-region (point) message-end)
+                                (unwind-protect
+                                    (when-let ((json-message
+                                                (condition-case err
+                                                    (jsonrpc--json-read)
+                                                  (error
+                                                   (prog1 nil
+                                                     (jsonrpc--warn "Invalid JSON: %s\n%s"
+                                                                    (cdr err) (buffer-string)))))))
+                                      (with-temp-buffer
+                                        ;; Calls success-fn and error-fn of
+                                        ;; jsonrpc-async-request, which can arbitrarily
+                                        ;; pollute or even kill (process-buffer PROC).
+                                        ;; Ergo, ensuing buffer-live-p check.
+                                        (jsonrpc-connection-receive connection json-message)))
+                                  (when (buffer-live-p (process-buffer proc))
+                                    (with-current-buffer (process-buffer proc)
+                                      (goto-char message-end)
+                                      (delete-region (point-min) (point))
+                                      (setf (jsonrpc--expected-bytes connection) nil))))))))))))))))
+    (add-function :around (process-sentinel (jsonrpc--process conn))
+                  xlsp-advise-sentinel
+                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel))))
+    (add-function :override (process-filter (jsonrpc--process conn))
+                  xlsp-advise-filter
+                  `((name . ,(xlsp-advise-tag xlsp-advise-filter))))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).
@@ -319,9 +386,6 @@ PositionEncodingKind currently disregarded."
   (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time)))
         (inhibit-message t)) ; but echo area still gets cleared... bad.
     (apply #'message (concat lhs format) args)))
-
-(defmacro xlsp-advise-tag (variable)
-  `(symbol-name ',variable))
 
 (defmacro xlsp-tack (lst tack)
   `(if (consp ,lst)
