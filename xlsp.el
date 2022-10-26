@@ -237,19 +237,14 @@ PositionEncodingKind currently disregarded."
   (or (when-let ((text-edit
                   (xlsp-struct-completion-item-text-edit item)))
         (xlsp-struct-text-edit-new-text text-edit))
-      (xlsp-struct-completion-item-filter-text item)))
+      (xlsp-struct-completion-item-filter-text item)
+      (xlsp-struct-completion-item-label item)))
 
 (defalias 'xlsp-default-completion-filter
   (lambda (query items)
-    (cl-loop with resolved-unresolved = (cons nil nil)
-             for item in items
-             do (if-let ((primary (xlsp-new-text item)))
-                    (when (string-prefix-p query primary :ignore-case)
-                      (push item (car resolved-unresolved)))
-                  (when-let ((backup (xlsp-struct-completion-item-label item)))
-                    (when (string-prefix-p query backup :ignore-case)
-                      (push item (cdr resolved-unresolved)))))
-             finally return resolved-unresolved)))
+    (cl-loop for item in items
+             when (string-prefix-p query (xlsp-new-text item) :ignore-case)
+             collect item)))
 
 (defvar xlsp-completion-filter-function (symbol-function 'xlsp-default-completion-filter)
   "Up to you.")
@@ -267,16 +262,13 @@ PositionEncodingKind currently disregarded."
                           (mapconcat (lambda (c)
                                        (format "[^%s]*[%s]" c c))
                                      (cdr breakdown-str) "")))))
-      (cl-loop with resolved-unresolved = (cons nil nil)
-               with re = (flx-regexp query)
-               for item in items
-               do (if-let ((primary (xlsp-new-text item)))
-                      (when (string-match-p re primary)
-                        (push item (car resolved-unresolved)))
-                    (when-let ((backup (xlsp-struct-completion-item-label item)))
-                      (when (string-match-p re backup)
-                        (push item (cdr resolved-unresolved)))))
-               finally return resolved-unresolved))))
+      (let ((re (flx-regexp query)))
+        (seq-keep
+         (lambda (item)
+           (when-let ((text (xlsp-new-text item)))
+             (when (string-match-p re text)
+               item)))
+         items)))))
 
 (defmacro xlsp-capability (conn &rest methods)
   (declare (indent defun))
@@ -373,10 +365,7 @@ whether to cache CANDIDATES."
                      ;; Assume user only interested in items starting
                      ;; at fixed pt, and that first item with a text-edit
                      ;; starts there.  If server offers no text-edits,
-                     ;; fall back to thing-at-bounds-point
-                     (has-text-edit
-                      (seq-find #'xlsp-struct-completion-item-text-edit
-                                items))
+                     ;; fall back to bounds-of-thing-at-point.
                      (beg-end (if-let ((has-text-edit
                                         (seq-find #'xlsp-struct-completion-item-text-edit
                                                   items))
@@ -393,71 +382,63 @@ whether to cache CANDIDATES."
                                ;; server often out of sync by design
                                (ignore-errors (buffer-substring-no-properties
                                                beg end))))
-                     (filtered-lists    ; (RESOLVED . UNRESOLVED)
+                     (filtered-items
                       (funcall
                        (or xlsp-completion-filter-function
                            (symbol-function 'xlsp-default-completion-filter))
-                       extant items)))
-                (let ((resolved-texts (mapcar #'xlsp-new-text (car filtered-lists))))
-                  (prog1 (funcall cb* resolved-texts)
-                    (setf (alist-get 'beg completion-state) beg
-                          (alist-get 'end completion-state) end
-                          (alist-get 'cache-p completion-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
-                          (alist-get 'kinds completion-state) (mapcar #'xlsp-struct-completion-item-kind (car filtered-lists))
-                          (alist-get 'details completion-state) (mapcar #'xlsp-struct-completion-item-detail (car filtered-lists)))
-                    (clrhash (alist-get 'index-of completion-state))
-                    (dotimes (i (length resolved-texts))
-                      (puthash (nth i resolved-texts) i
-                               (alist-get 'index-of completion-state)))
-                    (when (xlsp-capability (xlsp-connection-get buffer*)
-                            xlsp-struct-server-capabilities-completion-provider
-                            xlsp-struct-completion-options-resolve-provider)
-                      ;; track up the rest
-                      (cl-loop with conn = (xlsp-connection-get buffer*)
-                               with obeg = (alist-get 'beg completion-state)
-                               with oend = (alist-get 'end completion-state)
-                               for unresolved in (cdr filtered-lists)
-                               for olabel = (xlsp-struct-completion-item-label unresolved)
-                               do (jsonrpc-async-request
-                                   conn xlsp-request-completion-item/resolve
-                                   (xlsp-jsonify unresolved)
-                                   :success-fn
-                                   (apply-partially
-                                    (cl-function
-                                     (lambda (olabel* result-plist
-                                              &aux (item (xlsp-unjsonify 'xlsp-struct-completion-item result-plist)))
-                                       (when-let
-                                           ((active-p (or (with-current-buffer buffer*
-                                                            company-point)
-                                                          (null resolved-texts)))
-                                            (text (or (xlsp-new-text item)
-                                                      (xlsp-struct-completion-item-label item)))
-                                            (stable-beg-p
-                                             (eq
-                                              obeg
-                                              (alist-get 'beg completion-state)))
-                                            (stable-end-p
-                                             (eq
-                                              oend
-                                              (alist-get 'end completion-state)))
-                                            (stable-label-p
-                                             (equal
-                                              olabel*
-                                              (xlsp-struct-completion-item-label item))))
-                                         (puthash text (length (with-current-buffer buffer*
-                                                                 company-candidates))
-                                                  (alist-get 'index-of completion-state))
-                                         (xlsp-tack (alist-get 'kinds completion-state)
-                                                    (xlsp-struct-completion-item-kind item))
-                                         (xlsp-tack (alist-get 'details completion-state)
-                                                    (xlsp-struct-completion-item-detail item))
-                                         (with-current-buffer buffer*
-                                           (xlsp-tack company-candidates text)
-                                           (message "the fuq %S %S" text company-candidates)
-                                           (company-update-candidates company-candidates)
-                                           (company-call-frontends 'update)
-                                           (company-call-frontends 'post-command)))))
-                                    olabel))))))
+                       extant items))
+                     (texts (mapcar #'xlsp-new-text filtered-items)))
+                (prog1 (funcall cb* texts)
+                  (setf (alist-get 'beg completion-state) beg
+                        (alist-get 'end completion-state) end
+                        (alist-get 'cache-p completion-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
+                        (alist-get 'kinds completion-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
+                        (alist-get 'details completion-state) (mapcar #'xlsp-struct-completion-item-detail filtered-items))
+                  (clrhash (alist-get 'index-of completion-state))
+                  (dotimes (i (length texts))
+                    (puthash (nth i texts) i
+                             (alist-get 'index-of completion-state)))
+                  (when (xlsp-capability (xlsp-connection-get buffer*)
+                          xlsp-struct-server-capabilities-completion-provider
+                          xlsp-struct-completion-options-resolve-provider)
+                    ;; "By default the request can only delay the
+                    ;; computation of the detail and documentation
+                    ;; properties."
+                    (cl-loop with conn = (xlsp-connection-get buffer*)
+                             with obeg = (alist-get 'beg completion-state)
+                             with oend = (alist-get 'end completion-state)
+                             for i below (length filtered-items)
+                             for pre = (nth i filtered-items)
+                             unless (xlsp-struct-completion-item-detail pre)
+                             do (jsonrpc-async-request
+                                 conn xlsp-request-completion-item/resolve
+                                 (xlsp-jsonify pre)
+                                 :success-fn
+                                 (apply-partially
+                                  (cl-function
+                                   (lambda (i* result-plist
+                                            &aux (post (xlsp-unjsonify 'xlsp-struct-completion-item result-plist)))
+                                     (when-let
+                                         ((active-p (with-current-buffer buffer*
+                                                      company-point))
+                                          (text (xlsp-new-text post))
+                                          (stable-beg-p
+                                           (eq
+                                            obeg
+                                            (alist-get 'beg completion-state)))
+                                          (stable-end-p
+                                           (eq
+                                            oend
+                                            (alist-get 'end completion-state))))
+                                       (setf (nth i* (alist-get 'kinds completion-state))
+                                             (xlsp-struct-completion-item-kind post))
+                                       (setf (nth i* (alist-get 'details completion-state))
+                                             (xlsp-struct-completion-item-detail post))
+                                       (with-current-buffer buffer*
+                                         (company-update-candidates company-candidates)
+                                         (company-call-frontends 'update)
+                                         (company-call-frontends 'post-command)))))
+                                  i)))))
               (prog1 (funcall cb* nil)
                 (clrhash (alist-get 'index-of completion-state))
                 (setf (alist-get 'beg completion-state) nil
