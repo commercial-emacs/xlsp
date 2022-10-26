@@ -383,7 +383,7 @@ PositionEncodingKind currently disregarded."
 
 (defun xlsp-message (format &rest args)
   "Discrete logging."
-  (let ((lhs (format-time-string "%Y%m%dT%H%M%S [lsp] " (current-time)))
+  (let ((lhs (format-time-string "%H%M%S.%3N [lsp] " (current-time)))
         (inhibit-message t)) ; but echo area still gets cleared... bad.
     (apply #'message (concat lhs format) args)))
 
@@ -426,18 +426,16 @@ whether to cache CANDIDATES."
             (if-let ((items
                       (append
                        (xlsp-struct-completion-list-items completion-list) nil))
-                     ;; Assume user only interested in items starting
-                     ;; at fixed pt, and that first item with a text-edit
-                     ;; starts there.  If server offers no text-edits,
-                     ;; fall back to bounds-of-thing-at-point.
                      (beg-end (if-let ((has-text-edit
                                         (seq-find #'xlsp-struct-completion-item-text-edit
                                                   items))
                                        (range (xlsp-struct-text-edit-range
                                                (xlsp-struct-completion-item-text-edit
                                                 has-text-edit))))
+                                  ;; Good, server has specific range info.
                                   (cons (xlsp-our-pos buffer* (xlsp-struct-range-start range))
                                         (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
+                                ;; Bad, let's hope server agrees with us.
                                 (with-current-buffer buffer*
                                   (bounds-of-thing-at-point 'symbol))))
                      (beg (car beg-end))
@@ -447,10 +445,22 @@ whether to cache CANDIDATES."
                                (ignore-errors (buffer-substring-no-properties
                                                beg end))))
                      (filtered-items
-                      (funcall
-                       (or xlsp-completion-filter-function
-                           (symbol-function 'xlsp-default-completion-filter))
-                       extant items))
+                      (sort
+                       (funcall
+                        (or xlsp-completion-filter-function
+                            (symbol-function 'xlsp-default-completion-filter))
+                        extant items)
+                       (lambda (i1 i2)
+                         (cond ((not (string-prefix-p extant (xlsp-new-text i1)))
+                                i2)
+                               ((not (string-prefix-p extant (xlsp-new-text i2)))
+                                i1)
+                               (t
+                                (let ((s1 (xlsp-struct-completion-item-sort-text i1))
+                                      (s2 (xlsp-struct-completion-item-sort-text i2)))
+                                  (if (and s1 s2)
+                                      (string< s1 s2)
+                                    (not s2))))))))
                      (texts (mapcar #'xlsp-new-text filtered-items)))
                 (prog1 (funcall cb* texts)
                   (setf (alist-get 'beg completion-state) beg
@@ -615,7 +625,7 @@ whether to cache CANDIDATES."
             (unless (unchanged-p company-tooltip-idle-delay)
               (setq-local company-tooltip-idle-delay 0.5))
             (unless (unchanged-p company-idle-delay)
-              (setq-local company-idle-delay 0.6)))
+              (setq-local company-idle-delay 0.2)))
           (unless company-mode
             (company-mode))
           (unless eldoc-mode
@@ -694,9 +704,9 @@ whether to cache CANDIDATES."
   "Return value of sync kind."
   `(when-let ((sync (xlsp-capability ,conn
                       xlsp-struct-server-capabilities-text-document-sync)))
-     (if (atom sync)
-         sync
-       (funcall ',field sync))))
+     (if (recordp sync)
+         (funcall ',field sync)
+       sync)))
 
 (defun xlsp--connect (buffer project-dir)
   (when-let
@@ -785,11 +795,13 @@ whether to cache CANDIDATES."
                           (funcall (xlsp-did-open-text-document)))))))
 
                 ;; Register workspace-specific config, if any.
+                ;; Amazingly, pyright won't budge without this.
                 (jsonrpc-notify
                  conn xlsp-notification-workspace/did-change-configuration
                  (xlsp-jsonify
                   (make-xlsp-struct-did-change-configuration-params
-                   :settings (bound-and-true-p xlsp-workspace-configuration))))))))
+                   :settings (or (bound-and-true-p xlsp-workspace-configuration)
+                                 xlsp-struct-empty))))))))
          :error-fn
          (lambda (error)
            (xlsp-message "%s %s (%s)" name (plist-get error :message)

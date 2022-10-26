@@ -242,6 +242,8 @@
    ;;              xlsp-notifications))
    xlsp-notifications))
 
+(defconst xlsp-struct-empty (make-hash-table :size 1))
+
 (defun xlsp-literal (&rest args)
   (apply #'list args))
 
@@ -268,10 +270,11 @@
                    (value (funcall getter obj)))
           (setq result (json-add-to-object
                         result (xlsp-unhyphenate slot t) (xlsp-jsonify value)))))
-      result))))
+      (or result xlsp-struct-empty)))))
 
 (defun xlsp-unjsonify (struct-type json)
-  "Go from json-object-type (plist) to xlsp-struct."
+  "Go from json-object-type (plist) to xlsp-struct.
+Brutal without byte compilation."
   (if (not (get struct-type 'cl--class))
       (unless (eq json-false json)
         json)
