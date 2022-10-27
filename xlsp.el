@@ -6,7 +6,7 @@
 ;; URL: https://github.com/commercial-emacs/lsp
 ;; Version: 0.0.1
 ;; Keywords: languages
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "27.1") (company "0.9.13") (markdown-mode "2.6.1"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -34,8 +34,8 @@
 ;; -or-
 ;; (global-xlsp-mode) ; activate for any mode in xlsp-server-invocations
 ;;
-;; Nothing happens
-;; ---------------
+;; "Nothing is happening."
+;; -----------------------
 ;; Modes must have a corresponding entry in xlsp-server-invocations.
 ;;
 ;; Per-workspace configuration
@@ -314,7 +314,7 @@ PositionEncodingKind currently disregarded."
              collect item)))
 
 (defvar xlsp-completion-filter-function (symbol-function 'xlsp-default-completion-filter)
-  "Up to you.")
+  "Accepts QUERY (prefix) and ITEMS.  Returns filtered ITEMS.")
 
 (defalias 'xlsp-flx-completion-filter-function
   (lambda (query items)
@@ -338,23 +338,155 @@ PositionEncodingKind currently disregarded."
          items)))))
 
 (defmacro xlsp-capability (conn &rest methods)
+  "We want to catch incorrect METHODS at compile-time."
   (declare (indent defun))
-  `(when-let ((result (oref ,conn capabilities)))
-     (catch 'done
-       (dolist (method ',methods)
-         (setq result (ignore-errors (funcall method result)))
-         (unless result (throw 'done result))))
-     result))
+  (let ((sequence 'result))
+    (mapc (lambda (method)
+            (setq sequence (list sequence))
+            (push method sequence))
+          methods)
+    `(when-let ((result (oref ,conn capabilities)))
+       (ignore-errors ,sequence))))
+
+(defun xlsp-format-markup (markup)
+  "Format MARKUP according to LSP's spec."
+  (require 'markdown-mode)
+  (defvar markdown-fontify-code-blocks-natively)
+  (pcase-let ((`(,string ,mode)
+               (if (stringp markup)
+                   (list markup 'gfm-view-mode)
+                 (list (plist-get markup :value)
+                       (pcase (plist-get markup :kind)
+                         ("markdown" 'gfm-view-mode)
+                         ("plaintext" 'text-mode)
+                         (_ major-mode))))))
+    (with-temp-buffer
+      (setq-local markdown-fontify-code-blocks-natively t)
+      (insert string)
+      (let ((inhibit-message t)
+	    message-log-max)
+        (ignore-errors (delay-mode-hooks (funcall mode))))
+      (font-lock-ensure)
+      (string-trim (buffer-string)))))
+
+(defun xlsp-do-request-signature-help (buffer trigger-kind john-tavares)
+  "Curious that the Islanders captain also wrote eldoc.
+He is a dazzling young talent on the ice, but he could have made
+eldoc less circuitous.  JOHN-TAVARES accepts docstring, and
+optionally a bespoke plist for eldoc frontends."
+  (when-let ((conn (xlsp-connection-get buffer))
+             (params (make-xlsp-struct-signature-help-params
+                      :text-document (make-xlsp-struct-text-document-identifier
+                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                      :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                  (make-xlsp-struct-position
+                                   :line (car their-pos)
+                                   :character (cdr their-pos)))
+                      :context (make-xlsp-struct-signature-help-context
+                                :trigger-kind trigger-kind))))
+    (xlsp-sync-then-request
+     buffer conn
+     xlsp-request-text-document/signature-help
+     (xlsp-jsonify params)
+     :success-fn
+     (lambda (result-plist)
+       (let* ((help
+               (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
+              (prettify
+               (apply-partially
+                (cl-function
+                 (lambda (i* sig
+                          &aux
+                          (sig-active
+                           (xlsp-struct-signature-help-active-signature help))
+                          (documentation
+                           (xlsp-struct-signature-information-documentation sig))
+                          (label
+                           (xlsp-struct-signature-information-label sig))
+                          (params
+                           (xlsp-struct-signature-information-parameters sig))
+                          (param-active
+                           (or (xlsp-struct-signature-information-active-parameter sig)
+                               (xlsp-struct-signature-help-active-parameter help)))
+                          (i (prog1 i* (cl-incf i*)))
+                          formals-beg formals-end)
+                   (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
+                     ;; Ad-hoc attempt to parse label as <name>(<args>)
+                     (setq formals-beg (match-beginning 2)
+                           formals-end (match-end 2))
+                     (add-face-text-property (match-beginning 1) (match-end 1)
+                                             'font-lock-function-name-face
+                                             nil label))
+                   (when (eql i sig-active)
+                     ;; Processing the "active signature".
+                     (when-let ((doc-p (stringp documentation))
+                                (match-p (string-match
+                                          "[[:space:]]*\\([^.\r\n]+[.]?\\)"
+                                          documentation))
+                                (doc-match (match-string 1 documentation)))
+                       ;; Add one-line-summary to signature line
+                       (unless (string-prefix-p (string-trim doc-match) label)
+                         (setq label (concat label ": "
+                                             (xlsp-format-markup doc-match)))))
+                     (when-let ((formals-p formals-beg)
+                                (formals (cl-subseq label formals-beg formals-end))
+                                (param-p (fixnump param-active))
+                                (param (aref params (min (1- (length params))
+                                                         param-active)))
+                                (param-label (xlsp-struct-parameter-information-label
+                                              param)))
+                       ;; Highlight the active one of the args.
+                       (when-let ((beg-end
+                                   (if (stringp param-label)
+                                       (let (case-fold-search)
+                                         (when (string-match
+                                                (format "\\<%s\\>"
+                                                        (regexp-quote param-label))
+                                                formals)
+                                           (cons (+ formals-beg (match-beginning 0))
+                                                 (+ formals-beg (match-end 0)))))
+                                     (cons (aref param-label 0)
+                                           (aref param-label 1)))))
+                         (add-face-text-property
+                          (car beg-end) (cdr beg-end)
+                          'eldoc-highlight-function-argument
+                          nil label))
+                       ;; Add its doc on its own line.
+                       (when-let ((param-doc
+                                   (xlsp-struct-parameter-information-documentation
+                                    param)))
+                         (setq label
+                               (concat
+                                label "\n"
+                                (propertize
+                                 (if (stringp param-label)
+                                     param-label
+                                   (apply #'cl-subseq label
+                                          (append param-label nil)))
+                                 'face 'eldoc-highlight-function-argument)
+                                ": " (xlsp-format-markup param-doc))))))
+                   label))
+                ;; closure I*
+                0))
+              (pretty (mapconcat prettify
+                                 (xlsp-struct-signature-help-signatures help)
+                                 "\n")))
+         (funcall john-tavares pretty)))
+     :error-fn
+     (lambda (error)
+       (xlsp-message "xlsp-do-request-signature-help: %s (%s)"
+                     (plist-get error :message)
+                     (plist-get error :code))))))
 
 (defun xlsp-do-request-completion (buffer pos callback trigger-char)
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-completion-params
                       :text-document (make-xlsp-struct-text-document-identifier
                                       :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((send-pos (xlsp-their-pos buffer pos)))
+                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
                                   (make-xlsp-struct-position
-                                   :line (car send-pos)
-                                   :character (cdr send-pos)))
+                                   :line (car their-pos)
+                                   :character (cdr their-pos)))
                       :context (make-xlsp-struct-completion-context
                                 :trigger-kind
                                 (if trigger-char
@@ -697,6 +829,7 @@ whether to cache CANDIDATES."
           (assoc-delete-all conn-key xlsp--connections))))
 
 (defmacro xlsp-sync-p (conn field)
+  "Sync kind exists and is not 0."
   `(when-let ((kind (xlsp-sync-kind ,conn ,field)))
      (not (eq kind xlsp-text-document-sync-kind/none))))
 
@@ -835,7 +968,7 @@ whether to cache CANDIDATES."
        (unless ,probe-p
          (set (make-local-variable ',private) ,expr))))
 
-(defun xlsp-synchronize-closure (&optional probe-p)
+(defun xlsp-synchronize-closure (&optional probe-p _data)
   (xlsp-get-closure
     probe-p
     xlsp--synchronize-closure
@@ -912,7 +1045,7 @@ whether to cache CANDIDATES."
           (xlsp-struct-synchronize-version synchronize*))))
      (make-xlsp-struct-synchronize :buffer (current-buffer)))))
 
-(defun xlsp-did-change-text-document (&optional probe-p)
+(defun xlsp-did-change-text-document (&optional probe-p _data)
   (xlsp-get-closure
     probe-p
     xlsp--did-change-text-document
@@ -921,15 +1054,15 @@ whether to cache CANDIDATES."
       (lambda (beg end &optional deleted)
         "BEFORE-STATE* is naturally thread unsafe."
         (cl-flet ((get-row-col (pos)
-                    (let ((send-pos
+                    (let ((their-pos
                            (with-temp-buffer
                              (save-excursion
                                (insert (alist-get 'snippet before-state*)))
                              (xlsp-their-pos (current-buffer) (min pos (point-max))))))
                       (make-xlsp-struct-position
                        :line (+ (alist-get 'line-offset before-state*)
-                                (car send-pos))
-                       :character (cdr send-pos)))))
+                                (car their-pos))
+                       :character (cdr their-pos)))))
           (if (not deleted)
               ;; In `before-change-functions'
               (save-excursion
@@ -957,13 +1090,13 @@ whether to cache CANDIDATES."
                 :text (buffer-substring-no-properties beg end))))
             (setq before-state* state-empty)))))))
 
-(defun xlsp-did-save-text-document (&optional probe-p)
+(defun xlsp-did-save-text-document (&optional probe-p _data)
   (xlsp-get-closure
     probe-p
     xlsp--did-save-text-document
     (lambda () (funcall (xlsp-synchronize-closure) :save t))))
 
-(defun xlsp-did-open-text-document (&optional probe-p)
+(defun xlsp-did-open-text-document (&optional probe-p _data)
   (xlsp-get-closure
     probe-p
     xlsp--did-open-text-document
@@ -985,7 +1118,7 @@ whether to cache CANDIDATES."
                                      (point-min) (point-max)))))))))
      (current-buffer))))
 
-(defun xlsp-did-close-text-document (&optional probe-p)
+(defun xlsp-did-close-text-document (&optional probe-p _data)
   (xlsp-get-closure
     probe-p
     xlsp--did-close-text-document
@@ -1028,7 +1161,54 @@ whether to cache CANDIDATES."
              (xlsp-sync-p conn xlsp-struct-text-document-sync-options-save)))
           (did-open-close-predicate
            (lambda (conn)
-             (xlsp-sync-p conn xlsp-struct-text-document-sync-options-open-close))))
+             (xlsp-sync-p conn xlsp-struct-text-document-sync-options-open-close)))
+          (signature-help-predicate
+           (lambda (conn)
+             (xlsp-capability
+               conn xlsp-struct-server-capabilities-signature-help-provider)))
+          (signature-help-trigger-characters
+           (lambda (conn)
+             (append (xlsp-capability
+                       conn xlsp-struct-server-capabilities-signature-help-provider
+                       xlsp-struct-signature-help-options-trigger-characters)
+                     nil)))
+          (trigger-signature-help
+           (lambda (&optional probe-p trigger-characters) ; for the closure
+             (apply-partially
+              (lambda (buffer* trigger-characters*)
+                (with-current-buffer buffer*
+                  (when (and eldoc-mode
+                             (characterp last-input-event)
+                             (member (char-to-string last-input-event)
+                                     trigger-characters*))
+                    (let* ((eldoc-func
+                            (apply-partially
+                             #'xlsp-do-request-signature-help
+                             buffer*
+                             xlsp-signature-help-trigger-kind/trigger-character))
+                           (hack
+                            (lambda (args0)
+                              "Wrap ELDOC-ACT with ELDOC-FUNC."
+                              (cl-destructuring-bind (timer eldoc-act &rest args1)
+                                  args0
+                                (apply #'list
+                                       timer
+                                       (lambda (&rest args2)
+                                         (let ((eldoc-documentation-functions
+                                                (list eldoc-func)))
+                                           (apply eldoc-act args2)))
+                                       args1)))))
+                      (unwind-protect
+                          (progn
+                            (add-function :filter-args
+                                          (symbol-function 'timer-set-function)
+                                          hack)
+                            (when (timerp eldoc-timer)
+                              (cancel-timer eldoc-timer))
+                            (eldoc-schedule-timer))
+                        (remove-function
+                         (symbol-function 'timer-set-function) hack))))))
+              (current-buffer) trigger-characters))))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
                `([before-change-functions
@@ -1046,18 +1226,30 @@ whether to cache CANDIDATES."
                   -2]
                  [kill-buffer-hook
                   identity
-                  (lambda (&optional probe-p) ; for the closure
+                  (lambda (&optional probe-p _data) ; for the closure
                     (apply-partially #'xlsp-deregister-buffer (current-buffer)))
                   2]
                  ;; xlsp-find-file-hook takes care of after-revert.
                  [before-revert-hook
                   ,did-open-close-predicate
-                  xlsp-did-close-text-document]))
+                  xlsp-did-close-text-document]
+                 [eldoc-documentation-functions
+                  ,signature-help-predicate
+                  (lambda (&optional probe-p _data) ; for the closure
+                    (apply-partially
+                     #'xlsp-do-request-signature-help
+                     (current-buffer)
+                     xlsp-signature-help-trigger-kind/content-change))]
+                 [post-self-insert-hook
+                  ,signature-help-trigger-characters
+                  ,trigger-signature-help]
+                 ))
         (cl-destructuring-bind (hooks predicate closure &optional depth)
             (append entry nil)
           (if conn
-              (when (funcall predicate conn)
-                (add-hook hooks (funcall closure) depth :local))
+              (when-let ((predicate-retval (funcall predicate conn)))
+                (add-hook hooks (funcall closure nil predicate-retval)
+                          depth :local))
             (when-let ((extant (funcall closure :probe)))
               (remove-hook hooks extant :local))))))))
 
