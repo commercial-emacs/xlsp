@@ -370,167 +370,180 @@ PositionEncodingKind currently disregarded."
         (font-lock-ensure)
         (string-trim (buffer-string))))))
 
-(defun xlsp-do-request-signature-help (buffer eldoc-cb)
+(defun xlsp-do-request-signature-help (cache* buffer eldoc-cb)
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
-  (when-let ((conn (xlsp-connection-get buffer))
-             (params (make-xlsp-struct-signature-help-params
-                      :text-document (make-xlsp-struct-text-document-identifier
-                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((their-pos (xlsp-their-pos buffer (point))))
-                                  (make-xlsp-struct-position
-                                   :line (car their-pos)
-                                   :character (cdr their-pos)))
-                      :context (make-xlsp-struct-signature-help-context
-                                :trigger-kind
-                                (if (and (eq last-command 'self-insert-command)
-                                         (characterp last-command-event)
-                                         (member (char-to-string last-command-event)
-                                                 (append (xlsp-capability
-                                                           conn xlsp-struct-server-capabilities-signature-help-provider
-                                                           xlsp-struct-signature-help-options-trigger-characters)
-                                                         nil)))
-                                    xlsp-signature-help-trigger-kind/trigger-character
-                                  xlsp-signature-help-trigger-kind/content-change)))))
-    (xlsp-sync-then-request
-     buffer conn
-     xlsp-request-text-document/signature-help
-     (xlsp-jsonify params)
-     :success-fn
-     (lambda (result-plist)
-       (let* ((help
-               (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
-              (formatify
-               (apply-partially
-                (cl-function
-                 (lambda (i* sig
-                          &aux
-                          (sig-active
-                           (xlsp-struct-signature-help-active-signature help))
-                          (documentation
-                           (xlsp-struct-signature-information-documentation sig))
-                          (label
-                           (xlsp-struct-signature-information-label sig))
-                          (params
-                           (xlsp-struct-signature-information-parameters sig))
-                          (param-active
-                           (or (xlsp-struct-signature-information-active-parameter sig)
-                               (xlsp-struct-signature-help-active-parameter help)))
-                          (i (prog1 i* (cl-incf i*)))
-                          formals-beg formals-end)
-                   (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
-                     ;; Ad-hoc attempt to parse label as <name>(<args>)
-                     (setq formals-beg (match-beginning 2)
-                           formals-end (match-end 2))
-                     (add-face-text-property (match-beginning 1) (match-end 1)
-                                             'font-lock-function-name-face
-                                             nil label))
-                   (when (eql i sig-active)
-                     ;; Processing the "active signature".
-                     (when-let ((doc-p (stringp documentation))
-                                (match-p (string-match
-                                          "[[:space:]]*\\([^.\r\n]+[.]?\\)"
-                                          documentation))
-                                (doc-match (match-string 1 documentation)))
-                       ;; Add one-line-summary to signature line
-                       (unless (string-prefix-p (string-trim doc-match) label)
-                         (setq label (concat label ": "
-                                             (xlsp-format-markup doc-match)))))
-                     (when-let ((formals-p formals-beg)
-                                (formals (cl-subseq label formals-beg formals-end))
-                                (param-p (fixnump param-active))
-                                (param (aref params (min (1- (length params))
-                                                         param-active)))
-                                (param-label (xlsp-struct-parameter-information-label
-                                              param)))
-                       ;; Highlight the active one of the args.
-                       (when-let ((beg-end
-                                   (if (stringp param-label)
-                                       (let (case-fold-search)
-                                         (when (string-match
-                                                (format "\\<%s\\>"
-                                                        (regexp-quote param-label))
-                                                formals)
-                                           (cons (+ formals-beg (match-beginning 0))
-                                                 (+ formals-beg (match-end 0)))))
-                                     (cons (aref param-label 0)
-                                           (aref param-label 1)))))
-                         (add-face-text-property
-                          (car beg-end) (cdr beg-end)
-                          'eldoc-highlight-function-argument
-                          nil label))
-                       ;; Add its doc on its own line.
-                       (when-let ((param-doc
-                                   (xlsp-struct-parameter-information-documentation
-                                    param)))
-                         (setq label
-                               (concat
-                                label "\n"
-                                (propertize
-                                 (if (stringp param-label)
-                                     param-label
-                                   (apply #'cl-subseq label
-                                          (append param-label nil)))
-                                 'face 'eldoc-highlight-function-argument)
-                                ": " (xlsp-format-markup param-doc))))))
-                   label))
-                ;; closure I*
-                0))
-              (formatted (mapconcat formatify
-                                    (xlsp-struct-signature-help-signatures help)
-                                    "\n")))
-         (funcall eldoc-cb formatted)))
-     :error-fn
-     (lambda (error)
-       (xlsp-message "xlsp-do-request-signature-help: %s (%s)"
-                     (plist-get error :message)
-                     (plist-get error :code))))))
+  (let ((heuristic-target (with-current-buffer buffer
+                            (thing-at-point 'symbol))))
+    (if (eq (car cache*) heuristic-target)
+        (funcall eldoc-cb (cdr cache*))
+      (when-let ((conn (xlsp-connection-get buffer))
+                 (params (make-xlsp-struct-signature-help-params
+                          :text-document (make-xlsp-struct-text-document-identifier
+                                          :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                          :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                      (make-xlsp-struct-position
+                                       :line (car their-pos)
+                                       :character (cdr their-pos)))
+                          :context (make-xlsp-struct-signature-help-context
+                                    :trigger-kind
+                                    (if (and (eq last-command 'self-insert-command)
+                                             (characterp last-command-event)
+                                             (member (char-to-string last-command-event)
+                                                     (append (xlsp-capability
+                                                               conn xlsp-struct-server-capabilities-signature-help-provider
+                                                               xlsp-struct-signature-help-options-trigger-characters)
+                                                             nil)))
+                                        xlsp-signature-help-trigger-kind/trigger-character
+                                      xlsp-signature-help-trigger-kind/content-change)))))
+        (xlsp-sync-then-request
+         buffer conn
+         xlsp-request-text-document/signature-help
+         (xlsp-jsonify params)
+         :success-fn
+         (lambda (result-plist)
+           (let* ((help
+                   (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
+                  (formatify
+                   (apply-partially
+                    (cl-function
+                     (lambda (i* sig
+                                 &aux
+                                 (sig-active
+                                  (xlsp-struct-signature-help-active-signature help))
+                                 (documentation
+                                  (xlsp-struct-signature-information-documentation sig))
+                                 (label
+                                  (xlsp-struct-signature-information-label sig))
+                                 (params
+                                  (xlsp-struct-signature-information-parameters sig))
+                                 (param-active
+                                  (or (xlsp-struct-signature-information-active-parameter sig)
+                                      (xlsp-struct-signature-help-active-parameter help)))
+                                 (i (prog1 i* (cl-incf i*)))
+                                 formals-beg formals-end)
+                       (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
+                         ;; Ad-hoc attempt to parse label as <name>(<args>)
+                         (setq formals-beg (match-beginning 2)
+                               formals-end (match-end 2))
+                         (add-face-text-property (match-beginning 1) (match-end 1)
+                                                 'font-lock-function-name-face
+                                                 nil label))
+                       (when (eql i sig-active)
+                         ;; Processing the "active signature".
+                         (when-let ((doc-p (stringp documentation))
+                                    (match-p (string-match
+                                              "[[:space:]]*\\([^.\r\n]+[.]?\\)"
+                                              documentation))
+                                    (doc-match (match-string 1 documentation)))
+                           ;; Add one-line-summary to signature line
+                           (unless (string-prefix-p (string-trim doc-match) label)
+                             (setq label (concat label ": "
+                                                 (xlsp-format-markup doc-match)))))
+                         (when-let ((formals-p formals-beg)
+                                    (formals (cl-subseq label formals-beg formals-end))
+                                    (param-p (fixnump param-active))
+                                    (param (aref params (min (1- (length params))
+                                                             param-active)))
+                                    (param-label (xlsp-struct-parameter-information-label
+                                                  param)))
+                           ;; Highlight the active one of the args.
+                           (when-let ((beg-end
+                                       (if (stringp param-label)
+                                           (let (case-fold-search)
+                                             (when (string-match
+                                                    (format "\\<%s\\>"
+                                                            (regexp-quote param-label))
+                                                    formals)
+                                               (cons (+ formals-beg (match-beginning 0))
+                                                     (+ formals-beg (match-end 0)))))
+                                         (cons (aref param-label 0)
+                                               (aref param-label 1)))))
+                             (add-face-text-property
+                              (car beg-end) (cdr beg-end)
+                              'eldoc-highlight-function-argument
+                              nil label))
+                           ;; Add its doc on its own line.
+                           (when-let ((param-doc
+                                       (xlsp-struct-parameter-information-documentation
+                                        param)))
+                             (setq label
+                                   (concat
+                                    label "\n"
+                                    (propertize
+                                     (if (stringp param-label)
+                                         param-label
+                                       (apply #'cl-subseq label
+                                              (append param-label nil)))
+                                     'face 'eldoc-highlight-function-argument)
+                                    ": " (xlsp-format-markup param-doc))))))
+                       label))
+                    ;; closure I*
+                    0))
+                  (formatted (mapconcat formatify
+                                        (xlsp-struct-signature-help-signatures help)
+                                        "\n")))
+             (setcar cache* heuristic-target)
+             (setcdr cache* formatted)
+             (funcall eldoc-cb formatted)))
+         :error-fn
+         (lambda (error)
+           (xlsp-message "xlsp-do-request-signature-help: %s (%s)"
+                         (plist-get error :message)
+                         (plist-get error :code))))))))
 
-(defun xlsp-do-request-hover (buffer eldoc-cb)
+(defun xlsp-do-request-hover (cache* buffer eldoc-cb)
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
-  (when-let ((conn (xlsp-connection-get buffer))
-             (params (make-xlsp-struct-signature-help-params
-                      :text-document (make-xlsp-struct-text-document-identifier
-                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((their-pos (xlsp-their-pos buffer (point))))
-                                  (make-xlsp-struct-position
-                                   :line (car their-pos)
-                                   :character (cdr their-pos))))))
-    (xlsp-sync-then-request
-     buffer conn
-     xlsp-request-text-document/hover
-     (xlsp-jsonify params)
-     :success-fn
-     (lambda (result-plist)
-       (when-let ((hover
-                   (xlsp-unjsonify 'xlsp-struct-hover result-plist))
-                  (hover-contents (xlsp-struct-hover-contents hover))
-                  (markups
-                   (let ((contents hover-contents))
-                     (unless (vectorp contents)
-                       (setq contents (vector contents)))
-                     (mapcar (lambda (content)
-                               "MarkedString = string | {language:string; value:string}"
-                               (if (and (listp content)
-                                        (plist-get content :language)
-                                        (plist-get content :value))
-                                   (mapconcat #'identity
-                                              (cl-remove-if-not #'stringp content)
-                                              "\n")
-                                 content))
-                             contents)))
-                  (formatted
-                   (mapconcat #'identity
-                              (seq-keep #'xlsp-format-markup markups) "\n")))
-         (funcall eldoc-cb formatted :buffer t)))
-     :error-fn
-     (lambda (error)
-       (xlsp-message "xlsp-do-request-hover: %s (%s)"
-                     (plist-get error :message)
-                     (plist-get error :code))))))
+  (let ((heuristic-target (with-current-buffer buffer
+                            (thing-at-point 'symbol)))
+        (eldoc-cb-args '(:buffer t)))
+    (if (eq (car cache*) heuristic-target)
+        (apply eldoc-cb (cdr cache*) eldoc-cb-args)
+      (when-let ((conn (xlsp-connection-get buffer))
+                 (params (make-xlsp-struct-hover-params
+                          :text-document (make-xlsp-struct-text-document-identifier
+                                          :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                          :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                      (make-xlsp-struct-position
+                                       :line (car their-pos)
+                                       :character (cdr their-pos))))))
+        (xlsp-sync-then-request
+         buffer conn
+         xlsp-request-text-document/hover
+         (xlsp-jsonify params)
+         :success-fn
+         (lambda (result-plist)
+           (when-let ((hover
+                       (xlsp-unjsonify 'xlsp-struct-hover result-plist))
+                      (hover-contents (xlsp-struct-hover-contents hover))
+                      (markups
+                       (let ((contents hover-contents))
+                         (unless (vectorp contents)
+                           (setq contents (vector contents)))
+                         (mapcar (lambda (content)
+                                   "MarkedString = string | {language:string; value:string}"
+                                   (if (and (listp content)
+                                            (plist-get content :language)
+                                            (plist-get content :value))
+                                       (mapconcat #'identity
+                                                  (cl-remove-if-not #'stringp content)
+                                                  "\n")
+                                     content))
+                                 contents)))
+                      (formatted
+                       (mapconcat #'identity
+                                  (seq-keep #'xlsp-format-markup markups) "\n")))
+             (setcar cache* heuristic-target)
+             (setcdr cache* formatted)
+             (apply eldoc-cb formatted eldoc-cb-args)))
+         :error-fn
+         (lambda (error)
+           (xlsp-message "xlsp-do-request-hover: %s (%s)"
+                         (plist-get error :message)
+                         (plist-get error :code))))))))
 
 (defun xlsp-do-request-completion (buffer pos callback trigger-char)
   (when-let ((conn (xlsp-connection-get buffer))
@@ -1223,7 +1236,11 @@ whether to cache CANDIDATES."
           (hover-predicate
            (lambda (conn)
              (xlsp-capability
-               conn xlsp-struct-server-capabilities-hover-provider))))
+               conn xlsp-struct-server-capabilities-hover-provider)))
+          ;; Note a clear_message() is called on every keystroke,
+          ;; but the elisp-mode eldoc functions are fast enough
+          ;; to mask a flickering echo area.  Not so, xlsp.
+          (eldoc-cache '(nil . nil)))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
                `([before-change-functions
@@ -1253,12 +1270,14 @@ whether to cache CANDIDATES."
                   (lambda (&optional probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-signature-help
+                     (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  [eldoc-documentation-functions
                   ,hover-predicate
                   (lambda (&optional probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-hover
+                     (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  ))
         (cl-destructuring-bind (hooks predicate closure &optional depth)
