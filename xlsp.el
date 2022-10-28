@@ -355,25 +355,25 @@ PositionEncodingKind currently disregarded."
   (pcase-let ((`(,string ,mode)
                (if (stringp markup)
                    (list markup 'gfm-view-mode)
-                 (list (plist-get markup :value)
-                       (pcase (plist-get markup :kind)
-                         ("markdown" 'gfm-view-mode)
-                         ("plaintext" 'text-mode)
+                 (list (xlsp-struct-markup-content-value markup)
+                       (pcase (xlsp-struct-markup-content-kind markup)
+                         ((pred (equal xlsp-markup-kind/markdown)) 'gfm-view-mode)
+                         ((pred (equal xlsp-markup-kind/plain-text)) 'text-mode)
                          (_ major-mode))))))
-    (with-temp-buffer
-      (setq-local markdown-fontify-code-blocks-natively t)
-      (insert string)
-      (let ((inhibit-message t)
-	    message-log-max)
-        (ignore-errors (delay-mode-hooks (funcall mode))))
-      (font-lock-ensure)
-      (string-trim (buffer-string)))))
+    (when (stringp string)
+      (with-temp-buffer
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (insert string)
+        (let ((inhibit-message t)
+	      message-log-max)
+          (ignore-errors (delay-mode-hooks (funcall mode))))
+        (font-lock-ensure)
+        (string-trim (buffer-string))))))
 
-(defun xlsp-do-request-signature-help (buffer trigger-kind john-tavares)
-  "Curious that the Islanders captain also wrote eldoc.
-He is a dazzling young talent on the ice, but he could have made
-eldoc less circuitous.  JOHN-TAVARES accepts docstring, and
-optionally a bespoke plist for eldoc frontends."
+(defun xlsp-do-request-signature-help (buffer eldoc-cb)
+  "Implicitly called by eldoc machinery which passes in ELDOC-CB.
+ELDOC-CB takes a docstring, and optionally bespoke key-value
+pairs for its frontends."
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-signature-help-params
                       :text-document (make-xlsp-struct-text-document-identifier
@@ -383,7 +383,16 @@ optionally a bespoke plist for eldoc frontends."
                                    :line (car their-pos)
                                    :character (cdr their-pos)))
                       :context (make-xlsp-struct-signature-help-context
-                                :trigger-kind trigger-kind))))
+                                :trigger-kind
+                                (if (and (eq last-command 'self-insert-command)
+                                         (characterp last-command-event)
+                                         (member (char-to-string last-command-event)
+                                                 (append (xlsp-capability
+                                                           conn xlsp-struct-server-capabilities-signature-help-provider
+                                                           xlsp-struct-signature-help-options-trigger-characters)
+                                                         nil)))
+                                    xlsp-signature-help-trigger-kind/trigger-character
+                                  xlsp-signature-help-trigger-kind/content-change)))))
     (xlsp-sync-then-request
      buffer conn
      xlsp-request-text-document/signature-help
@@ -392,7 +401,7 @@ optionally a bespoke plist for eldoc frontends."
      (lambda (result-plist)
        (let* ((help
                (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
-              (prettify
+              (formatify
                (apply-partially
                 (cl-function
                  (lambda (i* sig
@@ -468,13 +477,58 @@ optionally a bespoke plist for eldoc frontends."
                    label))
                 ;; closure I*
                 0))
-              (pretty (mapconcat prettify
-                                 (xlsp-struct-signature-help-signatures help)
-                                 "\n")))
-         (funcall john-tavares pretty)))
+              (formatted (mapconcat formatify
+                                    (xlsp-struct-signature-help-signatures help)
+                                    "\n")))
+         (funcall eldoc-cb formatted)))
      :error-fn
      (lambda (error)
        (xlsp-message "xlsp-do-request-signature-help: %s (%s)"
+                     (plist-get error :message)
+                     (plist-get error :code))))))
+
+(defun xlsp-do-request-hover (buffer eldoc-cb)
+  "Implicitly called by eldoc machinery which passes in ELDOC-CB.
+ELDOC-CB takes a docstring, and optionally bespoke key-value
+pairs for its frontends."
+  (when-let ((conn (xlsp-connection-get buffer))
+             (params (make-xlsp-struct-signature-help-params
+                      :text-document (make-xlsp-struct-text-document-identifier
+                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                      :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                  (make-xlsp-struct-position
+                                   :line (car their-pos)
+                                   :character (cdr their-pos))))))
+    (xlsp-sync-then-request
+     buffer conn
+     xlsp-request-text-document/hover
+     (xlsp-jsonify params)
+     :success-fn
+     (lambda (result-plist)
+       (when-let ((hover
+                   (xlsp-unjsonify 'xlsp-struct-hover result-plist))
+                  (hover-contents (xlsp-struct-hover-contents hover))
+                  (markups
+                   (let ((contents hover-contents))
+                     (unless (vectorp contents)
+                       (setq contents (vector contents)))
+                     (mapcar (lambda (content)
+                               "MarkedString = string | {language:string; value:string}"
+                               (if (and (listp content)
+                                        (plist-get content :language)
+                                        (plist-get content :value))
+                                   (mapconcat #'identity
+                                              (cl-remove-if-not #'stringp content)
+                                              "\n")
+                                 content))
+                             contents)))
+                  (formatted
+                   (mapconcat #'identity
+                              (seq-keep #'xlsp-format-markup markups) "\n")))
+         (funcall eldoc-cb formatted :buffer t)))
+     :error-fn
+     (lambda (error)
+       (xlsp-message "xlsp-do-request-hover: %s (%s)"
                      (plist-get error :message)
                      (plist-get error :code))))))
 
@@ -1166,49 +1220,10 @@ whether to cache CANDIDATES."
            (lambda (conn)
              (xlsp-capability
                conn xlsp-struct-server-capabilities-signature-help-provider)))
-          (signature-help-trigger-characters
+          (hover-predicate
            (lambda (conn)
-             (append (xlsp-capability
-                       conn xlsp-struct-server-capabilities-signature-help-provider
-                       xlsp-struct-signature-help-options-trigger-characters)
-                     nil)))
-          (trigger-signature-help
-           (lambda (&optional probe-p trigger-characters) ; for the closure
-             (apply-partially
-              (lambda (buffer* trigger-characters*)
-                (with-current-buffer buffer*
-                  (when (and eldoc-mode
-                             (characterp last-input-event)
-                             (member (char-to-string last-input-event)
-                                     trigger-characters*))
-                    (let* ((eldoc-func
-                            (apply-partially
-                             #'xlsp-do-request-signature-help
-                             buffer*
-                             xlsp-signature-help-trigger-kind/trigger-character))
-                           (hack
-                            (lambda (args0)
-                              "Wrap ELDOC-ACT with ELDOC-FUNC."
-                              (cl-destructuring-bind (timer eldoc-act &rest args1)
-                                  args0
-                                (apply #'list
-                                       timer
-                                       (lambda (&rest args2)
-                                         (let ((eldoc-documentation-functions
-                                                (list eldoc-func)))
-                                           (apply eldoc-act args2)))
-                                       args1)))))
-                      (unwind-protect
-                          (progn
-                            (add-function :filter-args
-                                          (symbol-function 'timer-set-function)
-                                          hack)
-                            (when (timerp eldoc-timer)
-                              (cancel-timer eldoc-timer))
-                            (eldoc-schedule-timer))
-                        (remove-function
-                         (symbol-function 'timer-set-function) hack))))))
-              (current-buffer) trigger-characters))))
+             (xlsp-capability
+               conn xlsp-struct-server-capabilities-hover-provider))))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
                `([before-change-functions
@@ -1238,11 +1253,13 @@ whether to cache CANDIDATES."
                   (lambda (&optional probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-signature-help
-                     (current-buffer)
-                     xlsp-signature-help-trigger-kind/content-change))]
-                 [post-self-insert-hook
-                  ,signature-help-trigger-characters
-                  ,trigger-signature-help]
+                     (current-buffer)))]
+                 [eldoc-documentation-functions
+                  ,hover-predicate
+                  (lambda (&optional probe-p _data) ; for the closure
+                    (apply-partially
+                     #'xlsp-do-request-hover
+                     (current-buffer)))]
                  ))
         (cl-destructuring-bind (hooks predicate closure &optional depth)
             (append entry nil)
