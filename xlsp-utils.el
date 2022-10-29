@@ -109,6 +109,13 @@ lsp/3.17/specification/#uri"
               (,params (xlsp-unjsonify params-type params-plist)))
          ,@body))))
 
+(defmacro xlsp-get-closure (probe-p private expr)
+  "I'll do a lot to avoid defvar proliferation."
+  (declare (indent defun))
+  `(or (bound-and-true-p ,private)
+       (unless ,probe-p
+         (set (make-local-variable ',private) ,expr))))
+
 (provide 'xlsp-utils)
 
 ;;; xlsp-utils.el ends here

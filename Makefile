@@ -54,5 +54,7 @@ dist: dist-clean
 .PHONY: install
 install: dist
 	$(EMACS) -Q --batch -f package-initialize \
+	  --eval "(add-to-list 'package-archives '(\"melpa\" . \"http://melpa.org/packages/\"))" \
+	  -f package-refresh-contents \
 	  --eval "(with-current-buffer (dired \"dist\") \
 	            (package-install-from-buffer))"
