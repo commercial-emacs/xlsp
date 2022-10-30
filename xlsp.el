@@ -258,42 +258,6 @@ I use inode in case project directory gets renamed.")
 (defun xlsp--initialization-options (project-dir)
   (ignore project-dir))
 
-(defun xlsp-their-pos (buffer our-pos)
-  "Return cons pair of LSP-space zero-indexed line and character offset.
-PositionEncodingKind currently disregarded."
-  (with-current-buffer buffer
-    (save-excursion
-      (goto-char our-pos)
-      (save-restriction
-        (widen)
-        (let ((utf-16 (encode-coding-region (line-beginning-position)
-                                            (point) 'utf-16 t)))
-          (cons (1- (line-number-at-pos))
-                (/ (- (length utf-16) 2) 2))))))) ; subtract 2 for BOM
-
-(defun xlsp-our-pos (buffer their-pos)
-  "Return one-indexed charpos for LSP-space zero-indexed line/offset."
-  (with-current-buffer buffer
-    (save-excursion
-      (save-restriction
-        (widen)
-        (let ((source-line (line-number-at-pos))
-              (target-line (1+ (xlsp-struct-position-line their-pos))))
-          (when-let ((line-reached (zerop (forward-line (- target-line source-line))))
-                     (utf-16 (encode-coding-region
-                              (line-beginning-position)
-                              (line-end-position) 'utf-16 t))
-                     (pos (xlsp-struct-position-character their-pos))
-                     (upto-char (condition-case nil
-                                    (cl-subseq      ; add 2 for BOM
-                                     utf-16 0
-                                     (+ 2 (* 2 pos)))
-                                  (args-out-of-range
-                                   ;; server often out of sync by design
-                                   nil))))
-            (+ (line-beginning-position)
-               (length (decode-coding-string upto-char 'utf-16)))))))))
-
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
      (funcall (with-current-buffer ,buffer (xlsp-synchronize-closure)) :send t)
@@ -575,6 +539,32 @@ pairs for its frontends."
        (xlsp-message "xlsp-do-request-completion: %s (%s)"
                      (plist-get error :message)
                      (plist-get error :code))))))
+
+(defun xlsp-do-request-definition (buffer pos)
+  "This retrieves a location, not a definition."
+  (when-let ((conn (xlsp-connection-get buffer))
+             (params (make-xlsp-struct-definition-params
+                      :text-document (make-xlsp-struct-text-document-identifier
+                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                                  (make-xlsp-struct-position
+                                   :line (car their-pos)
+                                   :character (cdr their-pos)))))
+             (result-array (xlsp-sync-then-request
+                            buffer conn
+                            xlsp-request-text-document/definition
+                            (xlsp-jsonify params))))
+    (unless (vectorp result-array)
+      (setq result-array (vector result-array)))
+    ;; first attempt parsing as Location[] then as LocationLink[]
+    (let ((locations
+           (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-location)
+                    result-array)))
+      (unless (xlsp-struct-location-uri (car locations))
+        (setq locations (seq-map (apply-partially #'xlsp-unjsonify
+                                                  'xlsp-struct-location-link)
+                                 result-array)))
+      locations)))
 
 (defcustom xlsp-events-buffer-size (truncate 2e6)
   "Events buffer max size.  Zero for no buffer, nil for infinite."
@@ -1287,7 +1277,7 @@ whether to cache CANDIDATES."
                      (current-buffer)))]
                  [eldoc-documentation-functions
                   ,hover-predicate
-                  (lambda (&optional probe-p _data) ; for the closure
+                  (lambda (&optional _probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-hover
                      (gv-ref ,eldoc-cache)
@@ -1295,7 +1285,7 @@ whether to cache CANDIDATES."
                  [xref-backend-functions
                   ,definitions-predicate
                   (lambda (&optional _probe-p _data) ; for the closure
-                    'xlsp)]
+                    (apply-partially #'identity 'xlsp))]
                  ))
         (cl-destructuring-bind (hooks predicate closure &optional depth)
             (append entry nil)

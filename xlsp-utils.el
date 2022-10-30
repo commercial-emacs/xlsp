@@ -35,12 +35,17 @@
   :group 'applications)
 
 (defun xlsp-urify (path)
-  "RFC3986, like all RFCs, are write-only.
+  "Go from path to RFC3986.
+All RFCs are unintelligible, and this one is no exception.
 https://microsoft.github.io/language-server-protocol/specifications/\\
 lsp/3.17/specification/#uri"
   (let ((url-path-allowed-chars (copy-sequence url-path-allowed-chars)))
     (aset url-path-allowed-chars ?: nil)
     (url-encode-url (concat "file://" (expand-file-name path)))))
+
+(defun xlsp-unurify (uri)
+  "Go from RFC3986 to path."
+  (url-unhex-string (url-filename (url-generic-parse-url uri))))
 
 (defvar xlsp--hyphenate-data (make-hash-table :test #'equal)
   "Every time you `xlsp-hyphenate', make a backref to original camel.")
@@ -115,6 +120,42 @@ lsp/3.17/specification/#uri"
   `(or (bound-and-true-p ,private)
        (unless ,probe-p
          (set (make-local-variable ',private) ,expr))))
+
+(defun xlsp-their-pos (buffer our-pos)
+  "Return cons pair of LSP-space zero-indexed line and character offset.
+PositionEncodingKind currently disregarded."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char our-pos)
+      (save-restriction
+        (widen)
+        (let ((utf-16 (encode-coding-region (line-beginning-position)
+                                            (point) 'utf-16 t)))
+          (cons (1- (line-number-at-pos))
+                (/ (- (length utf-16) 2) 2))))))) ; subtract 2 for BOM
+
+(defun xlsp-our-pos (buffer their-pos)
+  "Return one-indexed charpos for LSP-space zero-indexed line/offset."
+  (with-current-buffer buffer
+    (save-excursion
+      (save-restriction
+        (widen)
+        (let ((source-line (line-number-at-pos))
+              (target-line (1+ (xlsp-struct-position-line their-pos))))
+          (when-let ((line-reached (zerop (forward-line (- target-line source-line))))
+                     (utf-16 (encode-coding-region
+                              (line-beginning-position)
+                              (line-end-position) 'utf-16 t))
+                     (pos (xlsp-struct-position-character their-pos))
+                     (upto-char (condition-case nil
+                                    (cl-subseq      ; add 2 for BOM
+                                     utf-16 0
+                                     (+ 2 (* 2 pos)))
+                                  (args-out-of-range
+                                   ;; server often out of sync by design
+                                   nil))))
+            (+ (line-beginning-position)
+               (length (decode-coding-string upto-char 'utf-16)))))))))
 
 (provide 'xlsp-utils)
 
