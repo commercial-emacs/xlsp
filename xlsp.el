@@ -107,72 +107,10 @@
                  (display-warning
                   'xlsp
                   (format "%s, %s" (process-name proc) change)
-                  :warning))))))
-        (xlsp-advise-filter
-         (lambda (proc string)
-           "jsonrpc--process-filter prone to typical output flushing issues."
-           (when (buffer-live-p (process-buffer proc))
-             (with-current-buffer (process-buffer proc)
-               (let ((inhibit-read-only t)
-                     (connection (process-get proc 'jsonrpc-connection)))
-                 ;; Insert the text, advancing the process marker.
-                 (save-excursion
-                   (goto-char (process-mark proc))
-                   (insert string)
-                   (set-marker (process-mark proc) (point)))
-                 (catch 'done
-                   (while t
-                     ;; More than one message might have arrived
-                     (unless (setf (jsonrpc--expected-bytes connection)
-                                   (or (jsonrpc--expected-bytes connection)
-                                       (and (search-forward-regexp
-                                             "\\(?:.*: .*\r\n\\)*Content-Length: \
-*\\([[:digit:]]+\\)\r\n\\(?:.*: .*\r\n\\)*\r\n"
-                                             (+ (point) 100) t)
-                                            (string-to-number (match-string 1)))))
-                       (throw 'done t))
-
-                     ;; Attempt to complete a message body
-                     (let ((available-bytes (- (position-bytes (process-mark proc))
-                                               (position-bytes (point))))
-                           (message-end (byte-to-position
-                                         (+ (position-bytes (point))
-                                            (jsonrpc--expected-bytes connection)))))
-                       (cond ((< available-bytes (jsonrpc--expected-bytes connection))
-                              ;; message still incomplete
-                              (throw 'done t))
-                             ((< (length (buffer-substring-no-properties (point) message-end))
-                                 (- message-end (point)))
-                              ;; output flushing vagaries
-                              (throw 'done t))
-                             (t
-                              (save-restriction
-                                (narrow-to-region (point) message-end)
-                                (unwind-protect
-                                    (when-let ((json-message
-                                                (condition-case err
-                                                    (jsonrpc--json-read)
-                                                  (error
-                                                   (prog1 nil
-                                                     (jsonrpc--warn "Invalid JSON: %s\n%s"
-                                                                    (cdr err) (buffer-string)))))))
-                                      (with-temp-buffer
-                                        ;; Calls success-fn and error-fn of
-                                        ;; jsonrpc-async-request, which can arbitrarily
-                                        ;; pollute or even kill (process-buffer PROC).
-                                        ;; Ergo, ensuing buffer-live-p check.
-                                        (jsonrpc-connection-receive connection json-message)))
-                                  (when (buffer-live-p (process-buffer proc))
-                                    (with-current-buffer (process-buffer proc)
-                                      (goto-char message-end)
-                                      (delete-region (point-min) (point))
-                                      (setf (jsonrpc--expected-bytes connection) nil))))))))))))))))
+                  :warning)))))))
     (add-function :around (process-sentinel (jsonrpc--process conn))
                   xlsp-advise-sentinel
-                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel))))
-    (add-function :override (process-filter (jsonrpc--process conn))
-                  xlsp-advise-filter
-                  `((name . ,(xlsp-advise-tag xlsp-advise-filter))))))
+                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel))))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).
@@ -336,14 +274,19 @@ I use inode in case project directory gets renamed.")
         (font-lock-ensure)
         (string-trim (buffer-string))))))
 
-(defun xlsp-do-request-signature-help (cache* buffer eldoc-cb)
+(defvar-local xlsp--eldoc-cache '(nil . nil)
+  "Note a clear_message() is called on every keystroke, but the
+elisp-mode eldoc functions are fast enough to mask a flickering
+echo area.  Not so, xlsp.")
+
+(defun xlsp-do-request-signature-help (buffer eldoc-cb)
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
   (let ((heuristic-target (with-current-buffer buffer
                             (thing-at-point 'symbol))))
-    (if (eq (car cache*) heuristic-target)
-        (funcall eldoc-cb (cdr cache*))
+    (if (eq (car xlsp--eldoc-cache) heuristic-target)
+        (funcall eldoc-cb (cdr xlsp--eldoc-cache))
       (when-let ((conn (xlsp-connection-get buffer))
                  (params (make-xlsp-struct-signature-help-params
                           :text-document (make-xlsp-struct-text-document-identifier
@@ -450,8 +393,8 @@ pairs for its frontends."
                       (formatted (mapconcat formatify
                                             (xlsp-struct-signature-help-signatures help)
                                             "\n")))
-             (setcar cache* heuristic-target)
-             (setcdr cache* formatted)
+             (setcar xlsp--eldoc-cache heuristic-target)
+             (setcdr xlsp--eldoc-cache formatted)
              (funcall eldoc-cb formatted)))
          :error-fn
          (lambda (error)
@@ -459,15 +402,15 @@ pairs for its frontends."
                          (plist-get error :message)
                          (plist-get error :code))))))))
 
-(defun xlsp-do-request-hover (cache* buffer eldoc-cb)
+(defun xlsp-do-request-hover (buffer eldoc-cb)
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
   (let ((heuristic-target (with-current-buffer buffer
                             (thing-at-point 'symbol)))
         (eldoc-cb-args '(:buffer t)))
-    (if (equal (car cache*) heuristic-target)
-        (apply eldoc-cb (cdr cache*) eldoc-cb-args)
+    (if (equal (car xlsp--eldoc-cache) heuristic-target)
+        (apply eldoc-cb (cdr xlsp--eldoc-cache) eldoc-cb-args)
       (when-let ((conn (xlsp-connection-get buffer))
                  (params (make-xlsp-struct-hover-params
                           :text-document (make-xlsp-struct-text-document-identifier
@@ -502,8 +445,8 @@ pairs for its frontends."
                       (formatted
                        (mapconcat #'identity
                                   (seq-keep #'xlsp-format-markup markups) "\n")))
-             (setcar cache* heuristic-target)
-             (setcdr cache* formatted)
+             (setcar xlsp--eldoc-cache heuristic-target)
+             (setcdr xlsp--eldoc-cache formatted)
              (apply eldoc-cb formatted eldoc-cb-args)))
          :error-fn
          (lambda (error)
@@ -1239,11 +1182,7 @@ whether to cache CANDIDATES."
           (definitions-predicate
            (lambda (conn)
              (xlsp-capability
-               conn xlsp-struct-server-capabilities-definition-provider)))
-          ;; Note a clear_message() is called on every keystroke,
-          ;; but the elisp-mode eldoc functions are fast enough
-          ;; to mask a flickering echo area.  Not so, xlsp.
-          (eldoc-cache '(nil . nil)))
+               conn xlsp-struct-server-capabilities-definition-provider))))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
                `([before-change-functions
@@ -1263,7 +1202,7 @@ whether to cache CANDIDATES."
                   identity
                   (lambda (&optional _probe-p _data) ; for the closure
                     (apply-partially #'xlsp-deregister-buffer (current-buffer)))
-                  2]
+                  -1]
                  ;; xlsp-find-file-hook takes care of after-revert.
                  [before-revert-hook
                   ,did-open-close-predicate
@@ -1273,14 +1212,12 @@ whether to cache CANDIDATES."
                   (lambda (&optional _probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-signature-help
-                     (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  [eldoc-documentation-functions
                   ,hover-predicate
                   (lambda (&optional _probe-p _data) ; for the closure
                     (apply-partially
                      #'xlsp-do-request-hover
-                     (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  [xref-backend-functions
                   ,definitions-predicate
