@@ -41,6 +41,7 @@ compile:
 
 .PHONY: test
 test: compile
+	$(EMACS) -batch -l mytest.el -f ert-run-tests-batch
 
 .PHONY: dist-clean
 dist-clean:
@@ -56,5 +57,6 @@ install: dist
 	$(EMACS) -Q --batch -f package-initialize \
 	  --eval "(add-to-list 'package-archives '(\"melpa\" . \"http://melpa.org/packages/\"))" \
 	  -f package-refresh-contents \
+	  --eval "(ignore-errors (apply (function package-delete) (alist-get (quote xlsp) package-alist)))" \
 	  --eval "(with-current-buffer (dired \"dist\") \
 	            (package-install-from-buffer))"

@@ -37,13 +37,21 @@
 (declare-function xlsp-do-request-definition "xlsp")
 (declare-function xlsp-do-request-definition "xlsp")
 
+(defsubst xlsp-xref-re-ceiling (identifier)
+  "We want the occurrence of IDENTIFIER spanning point.
+Failing that we want the one before, or failing that, after."
+  (let ((bounded-regex (concat "\\_<" (regexp-quote identifier) "\\_>"))
+        case-fold-search)
+    (save-excursion
+      (let ((after (re-search-forward bounded-regex nil t)))
+        (goto-char (if after (1- after) (point-max)))
+        (or (re-search-backward bounded-regex nil t)
+            after)))))
+
 (cl-defmethod xref-backend-definitions ((_backend (eql 'xlsp)) identifier)
   "Note LSP keys off IDENTIFIER at a precise file location."
   (save-excursion
-    (when-let ((bounded-regex (concat "\\_<" (regexp-quote identifier) "\\_>"))
-               (where (let (case-fold-search)
-                        (or (re-search-backward bounded-regex nil t)
-                            (re-search-forward bounded-regex nil t))))
+    (when-let ((where (xlsp-xref-re-ceiling identifier))
                (locations (xlsp-do-request-definition
                            (current-buffer) (goto-char where)))
                (location-type (type-of (car locations)))
@@ -104,13 +112,9 @@ Avoid seeing the metadata/category/overrides/styles fiasco in minibuffer.el."
         ;; So for now, exclude symbols missing from the current buffer.
         (let ((matches (cl-remove-if-not
                         (lambda (match)
-                          (let ((bounded-regex
-                                 (concat "\\_<" (regexp-quote match) "\\_>")))
-                            (and (string-prefix-p prefix match)
-                                 (with-current-buffer buffer*
-                                   (let (case-fold-search)
-                                     (or (re-search-backward bounded-regex nil t)
-                                         (re-search-forward bounded-regex nil t)))))))
+                          (and (string-prefix-p prefix match)
+                               (with-current-buffer buffer*
+                                 (xlsp-xref-re-ceiling match))))
                         matches*)))
           (cl-case action
             ;; from Ftry_completion()

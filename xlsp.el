@@ -466,7 +466,7 @@ pairs for its frontends."
   (let ((heuristic-target (with-current-buffer buffer
                             (thing-at-point 'symbol)))
         (eldoc-cb-args '(:buffer t)))
-    (if (eq (car cache*) heuristic-target)
+    (if (equal (car cache*) heuristic-target)
         (apply eldoc-cb (cdr cache*) eldoc-cb-args)
       (when-let ((conn (xlsp-connection-get buffer))
                  (params (make-xlsp-struct-hover-params
@@ -1440,6 +1440,7 @@ The problem is that goes from glob to files, and I need converse."
   xlsp-mode
   (lambda ()
     (when (and (buffer-file-name)
+               (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
   :group 'xlsp
