@@ -52,8 +52,8 @@
 ;;
 ;; (dir-locals-set-directory-class "my-project-dir" 'my-project-lsp)
 ;;
-;; What's the "x" in "xlsp" references
-;; -----------------------------------
+;; What the "x" in "xlsp" references
+;; ---------------------------------
 ;; It is merely a differentiator, just as the "x" in "xemacs" had been
 ;; (contrary to the popular misconception that it referenced X11).
 
@@ -197,12 +197,6 @@ I use inode in case project directory gets renamed.")
   (with-xlsp-connection (conn-key project-dir)
       buffer
     (xlsp--connection-destroy conn-key project-dir)))
-
-(defun xlsp-find-file-hook (conn-key*)
-  (with-xlsp-connection (conn-key project-dir)
-      (current-buffer)
-    (when (equal conn-key conn-key*)
-      (funcall (xlsp-did-open-text-document)))))
 
 (defun xlsp-connection-get (buffer)
   (with-xlsp-connection (conn-key project-dir)
@@ -875,14 +869,20 @@ whether to cache CANDIDATES."
           (unless company-mode
             (company-mode))
           (setq-local company-lighter (concat " " company-lighter-base))
-          (unless eldoc-mode
-            (eldoc-mode))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
           (when-let ((conn (xlsp-connection-get (current-buffer))))
             (if (jsonrpc-connection-ready-p conn :handshook)
-                (xlsp-toggle-hooks conn)
+                (progn
+                  (xlsp-toggle-hooks conn)
+                  (when (xlsp-sync-p
+                         conn xlsp-struct-text-document-sync-options-open-close)
+                    (funcall (xlsp-did-open-text-document))))
               (ignore "Presume async handshake will install hooks."))))
       ;; those add-functions are forever...
+      (when (xlsp-sync-p
+             (xlsp-connection-get (current-buffer))
+             xlsp-struct-text-document-sync-options-open-close)
+        (funcall (xlsp-did-close-text-document)))
       (xlsp-toggle-hooks nil)
       (xlsp-deregister-buffer (current-buffer))
       (unless global-company-mode
@@ -894,12 +894,9 @@ whether to cache CANDIDATES."
                                     company-idle-delay
                                     company-tooltip-idle-delay
                                     company-lighter
-                                    xlsp-synchronize-closure
-                                    xlsp-did-open-text-document)))))
+                                    xlsp-synchronize-closure)))))
 
 (defun xlsp--connection-destroy (conn-key project-dir)
-  ;; Remove hook added in xlsp--connect.
-  (remove-hook 'find-file-hook (apply-partially #'xlsp-find-file-hook conn-key))
   (dolist (b (cl-remove-if-not
               #'buffer-file-name
               (when-let ((proj (project-current nil project-dir)))
@@ -1004,14 +1001,6 @@ whether to cache CANDIDATES."
                       (xlsp-struct-initialize-result-capabilities result))
                 (oset conn server-info
                       (xlsp-struct-initialize-result-server-info result))
-
-                ;; Register future file-opens for mode and project (conn-key).
-                (with-xlsp-connection (conn-key project-dir)
-                    buffer
-                  (when (xlsp-sync-p
-                         conn xlsp-struct-text-document-sync-options-open-close)
-                    (add-hook 'find-file-hook
-                              (apply-partially #'xlsp-find-file-hook conn-key))))
 
                 ;; Ack
                 (jsonrpc-notify conn xlsp-notification-initialized
@@ -1205,35 +1194,30 @@ whether to cache CANDIDATES."
                   ,did-save-predicate
                   xlsp-did-save-text-document]
                  [kill-buffer-hook
-                  ,did-open-close-predicate
-                  xlsp-did-close-text-document
-                  -2]
-                 [kill-buffer-hook
                   identity
-                  (lambda (&optional _probe-p) ; for the closure
-                    (apply-partially #'xlsp-deregister-buffer (current-buffer)))
-                  -1]
-                 ;; xlsp-find-file-hook takes care of after-revert.
+                  (lambda ()
+                    (apply-partially #'xlsp-mode -1))]
                  [before-revert-hook
                   ,did-open-close-predicate
                   xlsp-did-close-text-document]
+                 ;; xlsp-mode takes care of after-revert.
                  [eldoc-documentation-functions
                   ,signature-help-predicate
-                  (lambda (&optional _probe-p) ; for the closure
+                  (lambda ()
                     (apply-partially
                      #'xlsp-do-request-signature-help
                      (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  [eldoc-documentation-functions
                   ,hover-predicate
-                  (lambda (&optional _probe-p) ; for the closure
+                  (lambda ()
                     (apply-partially
                      #'xlsp-do-request-hover
                      (gv-ref ,eldoc-cache)
                      (current-buffer)))]
                  [xref-backend-functions
                   ,definitions-predicate
-                  (lambda (&optional _probe-p) ; for the closure
+                  (lambda ()
                     (apply-partially #'identity 'xlsp))]
                  ))
         (cl-destructuring-bind (hooks predicate closure &optional depth)
@@ -1243,12 +1227,16 @@ whether to cache CANDIDATES."
                          (hook (funcall closure)))
                 (add-hook hooks hook depth :local)
                 (push (cons hooks hook) xlsp-hooks-alist))
-            ;; toggle off
-            (cl-loop for (hooks . hook) in xlsp-hooks-alist
-                     do (remove-hook hooks hook :local)
-                     finally (kill-local-variable 'xlsp-hooks-alist))
-            (when (symbolp closure) ; one of the defaliases
-              (kill-local-variable closure)))))))
+            (when (symbolp closure)    ; one of the defaliases
+              (kill-local-variable closure))))))
+    (if conn
+        (unless eldoc-mode
+          ;; Any earlier attempt to activate eldoc-mode
+          ;; fails for lack of eldoc-documentation-functions.
+          (eldoc-mode))
+      (cl-loop for (hooks . hook) in xlsp-hooks-alist
+               do (remove-hook hooks hook :local)
+               finally (kill-local-variable 'xlsp-hooks-alist))))
   "Ngl, this is ridonk.")
 
 (cl-defmethod jsonrpc-connection-ready-p ((conn xlsp-connection) _what)
