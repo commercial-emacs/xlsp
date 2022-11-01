@@ -41,7 +41,7 @@ compile:
 
 .PHONY: test
 test: compile
-	$(EMACS) -batch -l mytest.el -f ert-run-tests-batch
+	$(EMACS) -batch -L tests -l test-xlsp -f ert-run-tests-batch
 
 .PHONY: dist-clean
 dist-clean:
