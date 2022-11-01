@@ -21,7 +21,7 @@ schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.js
 README.rst: README.in.rst xlsp.el
 	grep ';;' xlsp.el \
 	  | awk '/;;;\s*Commentary/{within=1;next}/;;;\s*/{within=0}within' \
-	  | sed -e 's/^\s*;;*\s*//g' \
+	  | sed -e 's/^\s*;;*\s*/   /g' \
 	  | bash readme-sed.sh "COMMENTARY" README.in.rst > README.rst
 
 .PHONY: clean

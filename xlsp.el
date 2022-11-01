@@ -36,7 +36,7 @@
 ;;
 ;; "Nothing is happening."
 ;; -----------------------
-;; Modes must have a corresponding entry in xlsp-server-invocations.
+;; M-x customize-option RET xlsp-server-invocations RET
 ;;
 ;; Per-workspace configuration
 ;; ---------------------------
@@ -52,8 +52,8 @@
 ;;
 ;; (dir-locals-set-directory-class "my-project-dir" 'my-project-lsp)
 ;;
-;; What the "x" in "xlsp" references
-;; ---------------------------------
+;; What's the "x" in "xlsp" references
+;; -----------------------------------
 ;; It is merely a differentiator, just as the "x" in "xemacs" had been
 ;; (contrary to the popular misconception that it referenced X11).
 
