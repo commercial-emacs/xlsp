@@ -114,12 +114,11 @@ lsp/3.17/specification/#uri"
               (,params (xlsp-unjsonify params-type params-plist)))
          ,@body))))
 
-(defmacro xlsp-get-closure (probe-p private expr)
+(defmacro xlsp-get-closure (name callback)
   "I'll do a lot to avoid defvar proliferation."
   (declare (indent defun))
-  `(or (bound-and-true-p ,private)
-       (unless ,probe-p
-         (set (make-local-variable ',private) ,expr))))
+  `(or (bound-and-true-p ,name)
+       (set (make-local-variable ',name) ,callback)))
 
 (defun xlsp-their-pos (buffer our-pos)
   "Return cons pair of LSP-space zero-indexed line and character offset.

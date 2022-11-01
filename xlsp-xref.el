@@ -31,7 +31,7 @@
 
 (eval-when-compile
   (when (< emacs-major-version 28)
-    (defvar xlsp--xref-backend-identifier-completion-table)))
+    (defvar xlsp-xref-backend-identifier-completion-table)))
 
 (declare-function xlsp-do-request-workspace-symbols "xlsp")
 (declare-function xlsp-do-request-definition "xlsp")
@@ -87,8 +87,7 @@ Failing that we want the one before, or failing that, after."
 See Ftry_completion(), Fall_completions() in minibuf.c.
 Avoid seeing the metadata/category/overrides/styles fiasco in minibuffer.el."
   (xlsp-get-closure
-    nil
-    xlsp--xref-backend-identifier-completion-table
+    xlsp-xref-backend-identifier-completion-table
     (apply-partially
      (cl-function
       (lambda (buffer* state* prefix _pred action
