@@ -88,7 +88,16 @@
                             ,(funcall setter `(cons ,key (cons ,val ,getter)))))))))))
     (defmacro project-root (project)
       (with-suppressed-warnings ((obsolete project-roots))
-        `(car (project-roots ,project)))))
+        `(car (project-roots ,project))))
+    (defmacro project-buffers (project)
+      `(let ((root (expand-file-name (file-name-as-directory
+                                      (project-root ,project)))))
+         (nreverse
+          (cl-loop for b in (buffer-list)
+                   for dd = (expand-file-name (buffer-local-value
+                                               'default-directory b))
+                   when (string-prefix-p root dd)
+                   collect b)))))
   (when (< emacs-major-version 29)
     (defun seq-keep (function sequence)
       "Apply FUNCTION to SEQUENCE and return all non-nil results."
@@ -145,19 +154,6 @@ I use inode in case project directory gets renamed.")
 
 (defmacro xlsp-gv-connection (conn-key)
   `(alist-get ,conn-key xlsp--connections nil nil #'equal))
-
-(defmacro xlsp-project-buffers (project)
-  "`project-buffers' only exists in emacs-28"
-  (if (fboundp 'project-buffers)
-      `(project-buffers ,project)
-    `(let ((root (expand-file-name (file-name-as-directory
-                                    (project-root ,project)))))
-       (nreverse
-        (cl-loop for b in (buffer-list)
-                 for dd = (expand-file-name (buffer-local-value
-                                             'default-directory b))
-                 when (string-prefix-p root dd)
-                 collect b)))))
 
 (defmacro with-xlsp-connection (args buffer &rest body)
   (declare (indent 2))
@@ -907,7 +903,7 @@ whether to cache CANDIDATES."
   (dolist (b (cl-remove-if-not
               #'buffer-file-name
               (when-let ((proj (project-current nil project-dir)))
-                (xlsp-project-buffers proj))))
+                (project-buffers proj))))
     (with-current-buffer b
       (when (equal major-mode (car conn-key))
         (when xlsp-mode
@@ -1019,7 +1015,7 @@ whether to cache CANDIDATES."
                   (dolist (b (cl-remove-if-not
                               #'buffer-file-name
                               (when-let ((proj (project-current nil project-dir)))
-                                (xlsp-project-buffers proj))))
+                                (project-buffers proj))))
                     (with-current-buffer b
                       (when (equal major-mode (car conn-key))
                         ;; Now that we know capabilities, selectively activate hooks
