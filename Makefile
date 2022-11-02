@@ -50,7 +50,8 @@ compile: cask
 
 .PHONY: test
 test: compile
-	EMACS=$(EMACS) cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch
+	EMACS=$(EMACS) 2>&1 cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch | tee /tmp/xlsp.test.out
+	@! grep -q "unexpected results" /tmp/xlsp.test.out
 
 .PHONY: dist-clean
 dist-clean:
