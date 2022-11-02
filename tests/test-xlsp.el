@@ -53,7 +53,7 @@ his fooness")
                     (step-label (car step))
                     (step-plist (cdr step))
                     (match-p (re-search-backward
-                              "\\[\\([^]]+\\)\\] (id:\\([0-9]+\\))" nil t))
+                              "^\\[?\\([^]]+\\)\\]? (id:\\s-*\\([0-9]+\\))" nil t))
                     (what (match-string 1))
                     (id (string-to-number (match-string 2)))
                     (message (progn
@@ -100,9 +100,12 @@ his fooness")
                         xlsp-advise-logging))))
 
 (ert-deftest test-xlsp-test-basic ()
-  (skip-unless (executable-find
-                (car (split-string
-                      (alist-get 'c-mode xlsp-server-invocations)))))
+  (skip-unless (or (executable-find
+                    (car (split-string
+                          (alist-get 'c-mode xlsp-server-invocations))))
+                   (executable-find
+                    (setf (alist-get 'c-mode xlsp-server-invocations)
+                          "clangd-12"))))
   (skip-unless (executable-find vc-git-program))
   (test-xlsp-mock-repo
       (("foo.c" . "

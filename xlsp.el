@@ -67,14 +67,28 @@
 (require 'xlsp-server)
 (require 'xlsp-xref)
 
-(eval-when-compile
+(eval-and-compile
   (when (< emacs-major-version 28)
     (defvar xlsp-synchronize-closure)
     (defvar xlsp-did-change-text-document)
     (defvar xlsp-did-save-text-document)
     (defvar xlsp-did-open-text-document)
     (defvar xlsp-did-close-text-document)
-    (defvar minibuffer-default-prompt-format))
+    (defvar minibuffer-default-prompt-format)
+    (gv-define-expander plist-get
+      (lambda (do plist prop)
+        (macroexp-let2 macroexp-copyable-p key prop
+          (gv-letplace (getter setter) plist
+            (macroexp-let2 nil p `(cdr (plist-member ,getter ,key))
+              (funcall do
+                       `(car ,p)
+                       (lambda (val)
+                         `(if ,p
+                              (setcar ,p ,val)
+                            ,(funcall setter `(cons ,key (cons ,val ,getter)))))))))))
+    (defmacro project-root (project)
+      (with-suppressed-warnings ((obsolete project-roots))
+        `(car (project-roots ,project)))))
   (when (< emacs-major-version 29)
     (defun seq-keep (function sequence)
       "Apply FUNCTION to SEQUENCE and return all non-nil results."
@@ -132,19 +146,12 @@ I use inode in case project directory gets renamed.")
 (defmacro xlsp-gv-connection (conn-key)
   `(alist-get ,conn-key xlsp--connections nil nil #'equal))
 
-(defmacro xlsp-project-root (project)
-  "`project-root' only exists in emacs-28"
-  (if (fboundp 'project-root)
-      `(project-root ,project)
-    (with-suppressed-warnings ((obsolete project-roots))
-      `(car (project-roots ,project)))))
-
 (defmacro xlsp-project-buffers (project)
   "`project-buffers' only exists in emacs-28"
   (if (fboundp 'project-buffers)
       `(project-buffers ,project)
     `(let ((root (expand-file-name (file-name-as-directory
-                                    (xlsp-project-root ,project)))))
+                                    (project-root ,project)))))
        (nreverse
         (cl-loop for b in (buffer-list)
                  for dd = (expand-file-name (buffer-local-value
@@ -161,7 +168,7 @@ I use inode in case project directory gets renamed.")
                 (inode
                  (xlsp-inode (expand-file-name
                              (if-let ((project (project-current nil file-name)))
-                                 (xlsp-project-root project)
+                                 (project-root project)
                                (if (file-directory-p file-name)
                                    file-name
                                  (file-name-directory file-name))))))
