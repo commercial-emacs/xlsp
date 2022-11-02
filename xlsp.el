@@ -1,6 +1,6 @@
 ;;; xlsp.el --- Language Server Protocol client. -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2022 Commercial Emacs
+;; Copyright (C) 2022 Command Line Systems
 
 ;; Authors: dick        <dickie.smalls@commandlinesystems.com>
 ;; URL: https://github.com/commercial-emacs/lsp

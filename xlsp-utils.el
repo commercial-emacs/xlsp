@@ -1,12 +1,6 @@
 ;;; xlsp-utils.el -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2022 Commercial Emacs
-
-;; Authors: dick        <dickie.smalls@commandlinesystems.com>
-;; URL: https://github.com/commercial-emacs/lsp
-;; Version: 0.0.1
-;; Keywords: languages
-;; Package-Requires: ((emacs "27.1"))
+;; Copyright (C) 2022 Command Line Systems
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by

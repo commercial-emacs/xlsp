@@ -2,6 +2,15 @@ export EMACS ?= $(shell which emacs)
 
 .DEFAULT_GOAL := compile
 
+CASK_DIR := $(shell cask package-directory)
+
+.PHONY: cask
+cask: $(CASK_DIR)
+
+$(CASK_DIR): Cask
+	cask install
+	touch $(CASK_DIR)
+
 .PHONY: schema
 schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.json
 	$(EMACS) -Q --batch -L . -l xlsp-utils -l pp --eval "                  \
@@ -33,15 +42,15 @@ microsoft:
 	git submodule add https://github.com/microsoft/language-server-protocol.git
 
 .PHONY: compile
-compile:
-	$(EMACS) -batch -L . \
+compile: cask
+	EMACS=$(EMACS) cask emacs -batch -L . -L tests \
           --eval "(setq byte-compile-error-on-warn t)" \
-	  -f batch-byte-compile xlsp*.el ; \
+	  -f batch-byte-compile $$(cask files) tests/test-*.el; \
 	  (ret=$$? ; rm *.elc && exit $$ret)
 
 .PHONY: test
 test: compile
-	$(EMACS) -batch -L tests -l test-xlsp -f ert-run-tests-batch
+	EMACS=$(EMACS) cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch
 
 .PHONY: dist-clean
 dist-clean:
