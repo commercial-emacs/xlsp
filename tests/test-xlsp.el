@@ -130,5 +130,3 @@ void main (void) {
                    (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
                      (with-current-buffer (find-file "foo.c")
                        (should xlsp-mode))))))))
-
-;; do an :after of jsonrpc--log-event actually parsing the log text.
