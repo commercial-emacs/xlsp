@@ -33,10 +33,10 @@ Usage
    your .emacs instead:
    
    (dir-locals-set-class-variables 'my-project-lsp
-   '((python-mode
-   (xlsp-workspace-configuration
-   (:pylsp (:plugins (:jedi_completion (:include_params t :fuzzy t)
-   :pylint (:enabled :json-false)))))))
+     '((python-mode
+        (xlsp-workspace-configuration
+         (:pylsp (:plugins (:jedi_completion (:include_params t :fuzzy t)
+                            :pylint (:enabled :json-false)))))))
    
    (dir-locals-set-directory-class "my-project-dir" 'my-project-lsp)
    
