@@ -132,27 +132,6 @@ void main (void) {
           (with-current-buffer (find-file "foo.c")
             (should xlsp-mode))))))
     (set-buffer "foo.c")
-    (unless (< emacs-major-version 28)
-      ;; How does one set eldoc-documentation-function in emacs-27?
-      (eval
-       (quote
-        (test-xlsp-should
-            ((hover0 :what "client-request"
-                     :method xlsp-request-text-document/hover)
-             (hover1 :what "server-reply" :ref hover0))
-          (should eldoc-mode)
-          (ert-simulate-command '(search-forward "main"))
-          (ert-run-idle-timers))))
-      (should-error ; eldoc-cache forestalls another hover request
-       (eval
-        (quote
-         (test-xlsp-should
-             ((hover0 :what "client-request"
-                      :method xlsp-request-text-document/hover))
-           :timeout 1
-           (ert-simulate-command '(backward-char))
-           (ert-simulate-command '(forward-char))
-           (ert-run-idle-timers))))))
     (eval
      (quote
       (test-xlsp-should
