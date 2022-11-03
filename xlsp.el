@@ -951,34 +951,21 @@ whether to cache CANDIDATES."
           (xlsp-mode -1)))))
 
   (let ((conn (xlsp-gv-connection conn-key)))
+    ;; because heavy hitters like project-kill-buffers can blitzkrieg
+    ;; buffer landscape, this needs to be synchronous.
     (when (and conn (jsonrpc-running-p conn))
-      (jsonrpc-async-request
-       conn
-       xlsp-request-shutdown
-       nil
-       :error-fn
-       (lambda (error)
-         (xlsp-message "%s %s %s (%s)"
-                       xlsp-request-shutdown
-                       (xlsp-conn-string (car conn-key) project-dir)
-                       (plist-get error :message) (plist-get error :code)))
-       :timeout
-       2
-       :timeout-fn
-       (lambda ()
-         (xlsp-message "%s %s did not respond"
-                       xlsp-request-shutdown
-                       (xlsp-conn-string (car conn-key) project-dir))))
-
-      ;; eglot got this right by just firing off the exit notification
-      ;; sight unseen.  Ideally it'd issue from the success-fn callback
-      ;; of xlsp-request-shutdown, but jsonrpc--process-filter
-      ;; triggers that callback, which could kill the connection,
-      ;; and jsonrpc--process-filter lives in connection's buffer.
-      ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
-      (cl-letf (((symbol-function 'display-warning) #'ignore))
-        (jsonrpc-notify conn xlsp-notification-exit nil)))
-
+      (condition-case nil
+          (jsonrpc-request conn xlsp-request-shutdown nil)
+        (jsonrpc-error))
+      (when (jsonrpc-running-p conn)
+        ;; eglot got this right by just firing off the exit notification
+        ;; sight unseen.  Ideally it'd issue from the success-fn callback
+        ;; of xlsp-request-shutdown, but jsonrpc--process-filter
+        ;; triggers that callback, which could kill the connection,
+        ;; and jsonrpc--process-filter lives in connection's buffer.
+        ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
+        (cl-letf (((symbol-function 'display-warning) #'ignore))
+          (jsonrpc-notify conn xlsp-notification-exit nil))))
     ;; Unfortunately this cannot wait because user could
     ;; toggle xlsp-mode very quickly.
     (cl-letf (((symbol-function 'display-warning) #'ignore)
