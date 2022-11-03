@@ -20,8 +20,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        emacs_version: [28.2, 27.2]
+        os: [ubuntu-latest]
+        emacs_version: [27.2, 28.2]
 
     steps:
     - uses: actions/checkout@v2
