@@ -166,6 +166,8 @@ void main (void) {
         (should company-timer)
         (ert-run-idle-timers))))
     (defvar company-candidates)
+    (with-current-buffer (jsonrpc-events-buffer (xlsp-connection-get (current-buffer)))
+      (message "wtf %S" (buffer-string)))
     (should company-candidates)
     (ert-simulate-command '(company-complete))
     (should (save-excursion (re-search-backward (regexp-quote "foo.h"))))
