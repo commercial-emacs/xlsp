@@ -166,6 +166,7 @@ void main (void) {
         (should company-timer)
         (ert-run-idle-timers))))
     (defvar company-candidates)
+    (message "wtf %S" (buffer-string))
     (with-current-buffer (jsonrpc-events-buffer (xlsp-connection-get (current-buffer)))
       (message "wtf %S" (buffer-string)))
     (should company-candidates)
