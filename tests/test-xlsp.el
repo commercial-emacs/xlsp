@@ -169,11 +169,14 @@ void main (void) {
     (eval
      (quote
       (test-xlsp-should
-          ((did-open :what "client-notification"
+          ((goto-def0 :what "client-request"
+                      :method xlsp-request-text-document/definition)
+           (goto-def1 :what "server-reply" :ref goto-def0)
+           (did-open :what "client-notification"
                      :method xlsp-notification-text-document/did-open))
-        (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
-          (with-current-buffer (find-file "foo.h")
-            (should xlsp-mode))))))
+        (with-current-buffer (find-file "foo.c")
+          (ert-simulate-command `(xref-find-definitions "foo.h"))))))
+    (should (get-buffer "foo.h"))
     (eval
      (quote
       (test-xlsp-should
@@ -183,4 +186,18 @@ void main (void) {
                       :method xlsp-notification-text-document/did-open))
         (with-current-buffer (find-file "foo.c")
           (xlsp-mode -1)
-          (xlsp-mode)))))))
+          (xlsp-mode)))))
+    (let ((proc-name (xlsp-conn-string 'c-mode (project-root (project-current)))))
+      (if (fboundp 'project-kill-buffers)
+          ;; cannot check for orderly shutdown-exit because
+          ;; project-kill-buffers sometimes nixes the process buffer first.
+          (project-kill-buffers t)
+        (test-xlsp-should
+            ((shutdown :what "client-request"
+                       :method xlsp-request-shutdown)
+             (exit :what "client-notification"
+                   :method xlsp-notification-exit))
+          (let (kill-buffer-query-functions)
+            (mapc #'kill-buffer (split-string "foo.c foo.h")))))
+      (should-not (member proc-name
+                          (mapcar #'process-name (process-list)))))))

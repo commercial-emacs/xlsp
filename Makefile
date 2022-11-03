@@ -43,14 +43,14 @@ microsoft:
 
 .PHONY: compile
 compile: cask
-	EMACS=$(EMACS) cask emacs -batch -L . -L tests \
+	cask emacs -batch -L . -L tests \
           --eval "(setq byte-compile-error-on-warn t)" \
 	  -f batch-byte-compile $$(cask files) tests/test-*.el; \
 	  (ret=$$? ; rm *.elc tests/*.elc && exit $$ret)
 
 .PHONY: test
 test: compile
-	EMACS=$(EMACS) 2>&1 cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch | tee /tmp/xlsp.test.out
+	2>&1 cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch | tee /tmp/xlsp.test.out
 	@! grep -q "unexpected results" /tmp/xlsp.test.out
 
 .PHONY: dist-clean

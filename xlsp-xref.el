@@ -29,7 +29,6 @@
 
 (declare-function xlsp-do-request-workspace-symbols "xlsp")
 (declare-function xlsp-do-request-definition "xlsp")
-(declare-function xlsp-do-request-definition "xlsp")
 
 (defsubst xlsp-xref-re-ceiling (identifier)
   "We want the occurrence of IDENTIFIER spanning point.
@@ -42,7 +41,7 @@ Failing that we want the one before, or failing that, after."
         (or (re-search-backward bounded-regex nil t)
             after)))))
 
-(cl-defmethod xref-backend-definitions ((_backend (eql 'xlsp)) identifier)
+(cl-defmethod xref-backend-definitions ((_backend (eql xlsp)) identifier)
   "Note LSP keys off IDENTIFIER at a precise file location."
   (save-excursion
     (when-let ((where (xlsp-xref-re-ceiling identifier))

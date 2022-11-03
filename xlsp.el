@@ -67,7 +67,7 @@
 (require 'xlsp-server)
 (require 'xlsp-xref)
 
-(eval-and-compile
+(eval-when-compile
   (when (< emacs-major-version 28)
     (defvar xlsp-synchronize-closure)
     (defvar xlsp-did-change-text-document)
@@ -885,19 +885,24 @@ whether to cache CANDIDATES."
       (when (xlsp-sync-p
              (xlsp-connection-get (current-buffer))
              xlsp-struct-text-document-sync-options-open-close)
-        (funcall (xlsp-did-close-text-document)))
+        ;; things like project-kill-buffers kill the process buffer
+        ;; before did-close can attempt notification
+        (condition-case err
+            (funcall (xlsp-did-close-text-document))
+          (error (xlsp-message "xlsp-mode: %s, %s"
+                               (buffer-name) (cl-second err)))))
       (xlsp-toggle-hooks nil)
       (xlsp-deregister-buffer (current-buffer))
       (unless global-company-mode
         (company-mode -1))
       (unless global-eldoc-mode
-        (eldoc-mode -1))
-      (mapc #'kill-local-variable '(company-backends
-                                    company-minimum-prefix-length
-                                    company-idle-delay
-                                    company-tooltip-idle-delay
-                                    company-lighter
-                                    xlsp-synchronize-closure)))))
+        (eldoc-mode -1)))
+    (mapc #'kill-local-variable '(company-backends
+                                  company-minimum-prefix-length
+                                  company-idle-delay
+                                  company-tooltip-idle-delay
+                                  company-lighter
+                                  xlsp-synchronize-closure))))
 
 (defun xlsp--connection-destroy (conn-key project-dir)
   (dolist (b (cl-remove-if-not
