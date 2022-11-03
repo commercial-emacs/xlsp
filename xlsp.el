@@ -953,7 +953,10 @@ whether to cache CANDIDATES."
   (let ((conn (xlsp-gv-connection conn-key)))
     ;; because heavy hitters like project-kill-buffers can blitzkrieg
     ;; buffer landscape, this needs to be synchronous.
-    (when (and conn (jsonrpc-running-p conn))
+    (when (and conn
+               (jsonrpc-running-p conn)
+               (buffer-live-p (jsonrpc--events-buffer conn))
+               (buffer-live-p (process-buffer (jsonrpc--process conn))))
       (condition-case nil
           (jsonrpc-request conn xlsp-request-shutdown nil)
         (jsonrpc-error))
