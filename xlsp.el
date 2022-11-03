@@ -75,6 +75,12 @@
     (defvar xlsp-did-open-text-document)
     (defvar xlsp-did-close-text-document)
     (defvar minibuffer-default-prompt-format)
+    (define-derived-mode lisp-data-mode prog-mode "Lisp-Data"
+      "Major mode for buffers holding data written in Lisp syntax."
+      :group 'lisp
+      (lisp-mode-variables nil t nil)
+      (setq-local electric-quote-string t)
+      (setq imenu-case-fold-search nil))
     (gv-define-expander plist-get
       (lambda (do plist prop)
         (macroexp-let2 macroexp-copyable-p key prop
@@ -99,6 +105,28 @@
                    when (string-prefix-p root dd)
                    collect b)))))
   (when (< emacs-major-version 29)
+    (defmacro with-undo-amalgamate (&rest body)
+      "Like `progn' but perform BODY with amalgamated undo barriers.
+
+This allows multiple operations to be undone in a single step.
+When undo is disabled this behaves like `progn'."
+      (declare (indent 0) (debug t))
+      (let ((handle (make-symbol "--change-group-handle--")))
+        `(let ((,handle (prepare-change-group))
+               ;; Don't truncate any undo data in the middle of this,
+               ;; otherwise Emacs might truncate part of the resulting
+               ;; undo step: we want to mimic the behavior we'd get if the
+               ;; undo-boundaries were never added in the first place.
+               (undo-outer-limit nil)
+               (undo-limit most-positive-fixnum)
+               (undo-strong-limit most-positive-fixnum))
+           (unwind-protect
+               (progn
+                 (activate-change-group ,handle)
+                 ,@body)
+             (progn
+               (accept-change-group ,handle)
+               (undo-amalgamate-change-group ,handle))))))
     (defun seq-keep (function sequence)
       "Apply FUNCTION to SEQUENCE and return all non-nil results."
       (delq nil (seq-map function sequence)))))
@@ -269,7 +297,7 @@ I use inode in case project directory gets renamed.")
                                         (buffer-substring-no-properties
                                          (point-min) (point-max))))))
                                (vector (xlsp-literal :text full-text)))))))
-              (unless (zerop (length changes))
+              (when (cl-plusp (length changes))
                 (jsonrpc-notify     ; notifications are fire-and-forget
                  conn
                  xlsp-notification-text-document/did-change
@@ -657,9 +685,11 @@ Hooks must be tracked since closures ruin remove-hook's #'equal criterion.")
   (declare-function company--contains "company-capf")
   (declare-function company-call-frontends "company")
   (declare-function company-update-candidates "company")
-  (let* ((completion-state `((beg . nil) (end . nil) (cache-p . nil)
-                             (kinds . nil) (details . nil) (trigger-char . nil)
-                             (index-of . ,(make-hash-table :test #'equal))))
+  (let* ((empty-state `((beg . nil) (end . nil) (cache-p . nil)
+                        (kinds . nil) (details . nil)
+                        (trigger-char . nil) (additionses . nil)
+                        (index-of . ,(make-hash-table :test #'equal))))
+         (completion-state empty-state)
          (completion-callback
           (lambda (buffer* cb* completion-list)
             "The interval [BEG, END) spans the region supplantable by
@@ -710,7 +740,8 @@ whether to cache CANDIDATES."
                         (alist-get 'end completion-state) end
                         (alist-get 'cache-p completion-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
                         (alist-get 'kinds completion-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
-                        (alist-get 'details completion-state) (mapcar #'xlsp-struct-completion-item-detail filtered-items))
+                        (alist-get 'details completion-state) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
+                        (alist-get 'additionses completion-state) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
                   (clrhash (alist-get 'index-of completion-state))
                   (dotimes (i (length texts))
                     (puthash (nth i texts) i
@@ -751,18 +782,15 @@ whether to cache CANDIDATES."
                                              (xlsp-struct-completion-item-kind post))
                                        (setf (nth i* (alist-get 'details completion-state))
                                              (xlsp-struct-completion-item-detail post))
+                                       (setf (nth i* (alist-get 'additionses completion-state))
+                                             (xlsp-struct-completion-item-additional-text-edits post))
                                        (with-current-buffer buffer*
                                          (company-update-candidates company-candidates)
                                          (company-call-frontends 'update)
                                          (company-call-frontends 'post-command)))))
                                   i)))))
               (prog1 (funcall cb* nil)
-                (clrhash (alist-get 'index-of completion-state))
-                (setf (alist-get 'beg completion-state) nil
-                      (alist-get 'end completion-state) nil
-                      (alist-get 'cache-p completion-state) nil
-                      (alist-get 'kinds completion-state) nil
-                      (alist-get 'details completion-state) nil)))))
+                (setq completion-state empty-state)))))
          (completion-directive
           (lambda (cb)
             (xlsp-do-request-completion
@@ -817,6 +845,30 @@ whether to cache CANDIDATES."
                                  (nth (gethash candidate index-of) kinds)
                                  xlsp-company-kind-alist)))
                  (intern-soft (downcase kind))))
+              (post-completion
+               (when-let ((index-of (alist-get 'index-of completion-state))
+                          (additionses (alist-get 'additionses completion-state))
+                          (additions (nth (gethash candidate index-of) additionses))
+                          (tick (buffer-chars-modified-tick)))
+                 (undo-boundary)
+                 (condition-case err
+                     (with-undo-amalgamate
+                       (dolist (addition (append additions nil))
+                         (let* ((new-text (xlsp-struct-text-edit-new-text addition))
+                                (range (xlsp-struct-text-edit-range addition))
+                                (beg (xlsp-our-pos (current-buffer)
+                                                   (xlsp-struct-range-start range)))
+                                (end (xlsp-our-pos (current-buffer)
+                                                   (xlsp-struct-range-end range))))
+                           (replace-region-contents
+                            beg end (apply-partially
+                                     #'identity
+                                     new-text)))))
+                   (error (let ((inhibit-message t))
+                            (unless (= (buffer-chars-modified-tick) tick)
+                              (undo-only)))
+                          (message "post-completion error: %s"
+                                   (error-message-string err))))))
               (prefix
                ;; We use the "prefix" directive only to predict whether
                ;; issuing a candidates call will be fruitful.  Only
@@ -857,8 +909,6 @@ whether to cache CANDIDATES."
           (add-function :override (symbol-function 'company--contains)
                         xlsp-advise-contains
                         `((name . ,(xlsp-advise-tag xlsp-advise-contains))))
-          (setq-local company-backends company-backends)
-          (cl-pushnew backend company-backends)
           (cl-macrolet ((unchanged-p
                           (var)
                           `(eq (symbol-value ',var)
@@ -871,7 +921,8 @@ whether to cache CANDIDATES."
               (setq-local company-idle-delay 0.2)))
           (unless company-mode
             (company-mode))
-          (setq-local company-lighter (concat " " company-lighter-base))
+          (setq-local company-backends (cons backend company-backends)
+                      company-lighter (concat " " company-lighter-base))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
           (when-let ((conn (xlsp-connection-get (current-buffer))))
             (if (jsonrpc-connection-ready-p conn :handshook)
@@ -896,13 +947,13 @@ whether to cache CANDIDATES."
       (unless global-company-mode
         (company-mode -1))
       (unless global-eldoc-mode
-        (eldoc-mode -1)))
-    (mapc #'kill-local-variable '(company-backends
-                                  company-minimum-prefix-length
-                                  company-idle-delay
-                                  company-tooltip-idle-delay
-                                  company-lighter
-                                  xlsp-synchronize-closure))))
+        (eldoc-mode -1))
+      (mapc #'kill-local-variable '(company-backends
+                                    company-minimum-prefix-length
+                                    company-idle-delay
+                                    company-tooltip-idle-delay
+                                    company-lighter
+                                    xlsp-synchronize-closure)))))
 
 (defun xlsp--connection-destroy (conn-key project-dir)
   (dolist (b (cl-remove-if-not
