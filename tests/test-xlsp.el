@@ -19,7 +19,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(require 'ert-x)
 (require 'xlsp)
 (require 'log-edit)
 (require 'vc-git)
@@ -41,7 +41,7 @@ his fooness")
            ,@body)
        (delete-directory dir t))))
 
-(defun test-xlsp-script (steps)
+(defun test-xlsp-script (beg steps)
   "A single entry of STEPS is of the form (LABEL . PLIST)"
   (apply-partially
    (lambda (state*)
@@ -53,7 +53,8 @@ his fooness")
                     (step-label (car step))
                     (step-plist (cdr step))
                     (match-p (re-search-backward
-                              "^\\[?\\([^]]+\\)\\]? (id:\\s-*\\([0-9]+\\))" nil t))
+                              "^\\[?\\([^]]+\\)\\]? (id:\\s-*\\([0-9]+\\))"
+                              beg t))
                     (what (match-string 1))
                     (id (string-to-number (match-string 2)))
                     (message (progn
@@ -76,22 +77,28 @@ his fooness")
                    message))))))
    (list :queue steps :label-message nil)))
 
-(cl-defmacro test-xlsp-should ((&rest steps) &body body)
+(cl-defmacro test-xlsp-should ((&rest steps)
+                               &rest body
+                               &key (timeout 5) &allow-other-keys)
   (declare (indent 1))
-  `(let* ((steps ',steps)
-          (closure (test-xlsp-script (gv-ref steps)))
+  (cl-remf body :timeout)
+  `(let* ((conn (xlsp-connection-get (current-buffer)))
+          (beg (when conn
+                 (with-current-buffer (jsonrpc-events-buffer conn)
+                   (point-max))))
+          (steps ',steps)
+          (closure (test-xlsp-script beg (gv-ref steps)))
           (xlsp-advise-logging
-           (lambda (connection &rest _args)
-             (with-current-buffer (jsonrpc-events-buffer connection)
+           (lambda (conn &rest _args)
+             (with-current-buffer (jsonrpc-events-buffer conn)
                (funcall closure)))))
      (unwind-protect
          (progn
            (add-function :after (symbol-function 'jsonrpc--log-event)
                          xlsp-advise-logging
                          `((name . ,(xlsp-advise-tag xlsp-advise-logging))))
-           ,@body
            (with-timeout
-            (5)
+            (,timeout)
             ,@body
             (while steps
               (accept-process-output nil 0.1)))
@@ -123,10 +130,27 @@ void main (void) {
     ;; Macros in BODY are expanded when the test is defined, not when it
     ;; is run.  If a macro (possibly with side effects) is to be tested,
     ;; it has to be wrapped in `(eval (quote ...))'.
-    (eval (quote (test-xlsp-should
-                     ((init0 :what "client-request" :method xlsp-request-initialize)
-                      (init1 :what "server-reply" :ref init0))
-                   (require 'cc-mode)
-                   (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
-                     (with-current-buffer (find-file "foo.c")
-                       (should xlsp-mode))))))))
+    (global-xlsp-mode)
+    (eval
+     (quote
+      (test-xlsp-should
+          ((init0 :what "client-request" :method xlsp-request-initialize)
+           (init1 :what "server-reply" :ref init0))
+        (with-current-buffer (find-file "foo.c")
+          (should xlsp-mode)))))
+    (with-current-buffer "foo.c"
+      (eval
+       (quote
+        (test-xlsp-should
+            ((hover0 :what "client-request" :method xlsp-request-text-document/hover)
+             (hover1 :what "server-reply" :ref hover0))
+          (should eldoc-mode)
+          (ert-simulate-command '(search-forward "main"))
+          (ert-run-idle-timers))))
+      (should-error ; eldoc-cache forestalls another hover request
+       (eval
+        (quote
+         (test-xlsp-should
+             ((hover0 :what "client-request" :method xlsp-request-text-document/hover))
+           :timeout 1
+           (backward-char))))))))
