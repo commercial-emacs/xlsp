@@ -1,20 +1,5 @@
 ;;; test-xlsp.el -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2022 Command Line Systems
-
-;; This program is free software; you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
-
-;; This program is distributed in the hope that it will be useful,
-;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-;; GNU General Public License for more details.
-
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 ;;; Commentary:
 
 ;;; Code:
@@ -146,28 +131,44 @@ void main (void) {
         (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
           (with-current-buffer (find-file "foo.c")
             (should xlsp-mode))))))
+    (set-buffer "foo.c")
     (unless (< emacs-major-version 28)
       ;; How does one set eldoc-documentation-function in emacs-27?
-      (with-current-buffer "foo.c"
-        (eval
-         (quote
-          (test-xlsp-should
-              ((hover0 :what "client-request"
-                       :method xlsp-request-text-document/hover)
-               (hover1 :what "server-reply" :ref hover0))
-            (should eldoc-mode)
-            (ert-simulate-command '(search-forward "main"))
-            (ert-run-idle-timers))))
-        (should-error ; eldoc-cache forestalls another hover request
-         (eval
-          (quote
-           (test-xlsp-should
-               ((hover0 :what "client-request"
-                        :method xlsp-request-text-document/hover))
-             :timeout 1
-             (ert-simulate-command '(backward-char))
-             (ert-simulate-command '(forward-char))
-             (ert-run-idle-timers)))))))
+      (eval
+       (quote
+        (test-xlsp-should
+            ((hover0 :what "client-request"
+                     :method xlsp-request-text-document/hover)
+             (hover1 :what "server-reply" :ref hover0))
+          (should eldoc-mode)
+          (ert-simulate-command '(search-forward "main"))
+          (ert-run-idle-timers))))
+      (should-error ; eldoc-cache forestalls another hover request
+       (eval
+        (quote
+         (test-xlsp-should
+             ((hover0 :what "client-request"
+                      :method xlsp-request-text-document/hover))
+           :timeout 1
+           (ert-simulate-command '(backward-char))
+           (ert-simulate-command '(forward-char))
+           (ert-run-idle-timers))))))
+    (eval
+     (quote
+      (test-xlsp-should
+          ((comp0 :what "client-request"
+                  :method xlsp-request-text-document/completion)
+           (comp1 :what "server-reply" :ref comp0))
+        (should company-mode)
+        (re-search-forward (regexp-quote "{"))
+        (dolist (char (seq-map #'identity "\n  fprin"))
+          (ert-simulate-command `(self-insert-command 1 ,char)))
+        (should company-timer)
+        (ert-run-idle-timers))))
+    (defvar company-candidates)
+    (should company-candidates)
+    (ert-simulate-command '(company-complete))
+    (should (save-excursion (re-search-backward (regexp-quote "foo.h"))))
     (eval
      (quote
       (test-xlsp-should
@@ -176,8 +177,7 @@ void main (void) {
            (goto-def1 :what "server-reply" :ref goto-def0)
            (did-open :what "client-notification"
                      :method xlsp-notification-text-document/did-open))
-        (with-current-buffer (find-file "foo.c")
-          (ert-simulate-command `(xref-find-definitions "foo.h"))))))
+        (ert-simulate-command `(xref-find-definitions "foo.h")))))
     (should (get-buffer "foo.h"))
     (eval
      (quote
@@ -186,9 +186,8 @@ void main (void) {
                       :method xlsp-notification-text-document/did-close)
            (did-open :what "client-notification"
                       :method xlsp-notification-text-document/did-open))
-        (with-current-buffer (find-file "foo.c")
-          (xlsp-mode -1)
-          (xlsp-mode)))))
+        (xlsp-mode -1)
+        (xlsp-mode))))
     (let ((proc-name (xlsp-conn-string 'c-mode (project-root (project-current)))))
       (if (fboundp 'project-kill-buffers)
           ;; cannot check for orderly shutdown-exit because
