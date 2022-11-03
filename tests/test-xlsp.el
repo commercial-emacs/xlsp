@@ -135,6 +135,28 @@ void main (void) {
     (eval
      (quote
       (test-xlsp-should
+          ((hover0 :what "client-request"
+                   :method xlsp-request-text-document/hover)
+           (hover1 :what "server-reply" :ref hover0))
+        (should eldoc-mode)
+        (ert-simulate-command '(search-forward "main"))
+        ;; Brutal: coerce eldoc-display-message-p to true
+        (setq this-command nil
+              last-command (aref eldoc-message-commands 0))
+        (ert-run-idle-timers))))
+    (should-error ; eldoc-cache forestalls another hover request
+     (eval
+      (quote
+       (test-xlsp-should
+           ((hover0 :what "client-request"
+                    :method xlsp-request-text-document/hover))
+         :timeout 1
+         (ert-simulate-command '(backward-char))
+         (ert-simulate-command '(forward-char))
+         (ert-run-idle-timers)))))
+    (eval
+     (quote
+      (test-xlsp-should
           ((comp0 :what "client-request"
                   :method xlsp-request-text-document/completion)
            (comp1 :what "server-reply" :ref comp0))

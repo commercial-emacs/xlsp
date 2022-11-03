@@ -504,57 +504,65 @@ pairs for its frontends."
                          (plist-get error :message)
                          (plist-get error :code))))))))
 
-(defun xlsp-do-request-hover (cache* buffer eldoc-cb)
+(defun xlsp-do-request-hover (cache* sync* buffer eldoc-cb)
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
-pairs for its frontends."
+pairs for its frontends.  The eldoc situation got even messier
+in v28, if that were possible, and SYNC* needs to be true
+to retrofit current logic to v27."
   (let ((heuristic-target (with-current-buffer buffer
                             (thing-at-point 'symbol)))
         (eldoc-cb-args '(:buffer t)))
     (if (equal (car cache*) heuristic-target)
         (apply eldoc-cb (cdr cache*) eldoc-cb-args)
-      (when-let ((conn (xlsp-connection-get buffer))
-                 (params (make-xlsp-struct-hover-params
-                          :text-document (make-xlsp-struct-text-document-identifier
-                                          :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                          :position (let ((their-pos (xlsp-their-pos buffer (point))))
-                                      (make-xlsp-struct-position
-                                       :line (car their-pos)
-                                       :character (cdr their-pos))))))
-        (xlsp-sync-then-request
-         buffer conn
-         xlsp-request-text-document/hover
-         (xlsp-jsonify params)
-         :success-fn
-         (lambda (result-plist)
-           (when-let ((hover
-                       (xlsp-unjsonify 'xlsp-struct-hover result-plist))
-                      (hover-contents (xlsp-struct-hover-contents hover))
-                      (markups
-                       (let ((contents hover-contents))
-                         (unless (vectorp contents)
-                           (setq contents (vector contents)))
-                         (mapcar (lambda (content)
-                                   "MarkedString = string | {language:string; value:string}"
-                                   (if (and (listp content)
-                                            (plist-get content :language)
-                                            (plist-get content :value))
-                                       (mapconcat #'identity
-                                                  (cl-remove-if-not #'stringp content)
-                                                  "\n")
-                                     content))
-                                 contents)))
-                      (formatted
-                       (mapconcat #'identity
-                                  (seq-keep #'xlsp-format-markup markups) "\n")))
-             (setcar cache* heuristic-target)
-             (setcdr cache* formatted)
-             (apply eldoc-cb formatted eldoc-cb-args)))
-         :error-fn
-         (lambda (error)
-           (xlsp-message "xlsp-do-request-hover: %s (%s)"
-                         (plist-get error :message)
-                         (plist-get error :code))))))))
+      (let* ((conn (xlsp-connection-get buffer))
+             (params (make-xlsp-struct-hover-params
+                      :text-document (make-xlsp-struct-text-document-identifier
+                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                      :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                  (make-xlsp-struct-position
+                                   :line (car their-pos)
+                                   :character (cdr their-pos)))))
+             (success-fn
+              (lambda (result-plist)
+                (when-let ((hover
+                            (xlsp-unjsonify 'xlsp-struct-hover result-plist))
+                           (hover-contents (xlsp-struct-hover-contents hover))
+                           (markups
+                            (let ((contents hover-contents))
+                              (unless (vectorp contents)
+                                (setq contents (vector contents)))
+                              (mapcar
+                               (lambda (content)
+                                 "MarkedString = string | {language:string; value:string}"
+                                 (if (and (listp content)
+                                          (plist-get content :language)
+                                          (plist-get content :value))
+                                     (mapconcat #'identity
+                                                (cl-remove-if-not #'stringp content)
+                                                "\n")
+                                   content))
+                               contents)))
+                           (formatted
+                            (mapconcat #'identity
+                                       (seq-keep #'xlsp-format-markup markups) "\n")))
+                  (setcar cache* heuristic-target)
+                  (setcdr cache* formatted)
+                  (apply eldoc-cb formatted eldoc-cb-args))))
+             (error-fn
+              (lambda (error)
+                (xlsp-message "xlsp-do-request-hover: %s (%s)"
+                              (plist-get error :message)
+                              (plist-get error :code)))))
+        (if sync*
+            (funcall success-fn
+                     (xlsp-sync-then-request
+                      buffer conn xlsp-request-text-document/hover
+                      (xlsp-jsonify params)))
+          (xlsp-sync-then-request
+           buffer conn xlsp-request-text-document/hover
+           (xlsp-jsonify params)
+           :success-fn success-fn :error-fn error-fn))))))
 
 (defun xlsp-do-request-completion (buffer pos callback trigger-char)
   (when-let ((conn (xlsp-connection-get buffer))
@@ -938,6 +946,7 @@ whether to cache CANDIDATES."
                                     company-idle-delay
                                     company-tooltip-idle-delay
                                     company-lighter
+                                    eldoc-documentation-function
                                     xlsp-synchronize-closure)))))
 
 (defun xlsp--connection-destroy (conn-key project-dir)
@@ -1248,6 +1257,7 @@ whether to cache CANDIDATES."
                     (apply-partially
                      #'xlsp-do-request-hover
                      (gv-ref ,eldoc-cache)
+                     nil
                      (current-buffer)))]
                  [xref-backend-functions
                   ,definitions-predicate
@@ -1262,15 +1272,26 @@ whether to cache CANDIDATES."
                 (add-hook hooks hook depth :local)
                 (push (cons hooks hook) xlsp-hooks-alist))
             (when (symbolp closure)    ; one of the defaliases
-              (kill-local-variable closure))))))
-    (if conn
-        (unless eldoc-mode
-          ;; Any earlier attempt to activate eldoc-mode
-          ;; fails for lack of eldoc-documentation-functions.
-          (eldoc-mode))
-      (cl-loop for (hooks . hook) in xlsp-hooks-alist
-               do (remove-hook hooks hook :local)
-               finally (kill-local-variable 'xlsp-hooks-alist))))
+              (kill-local-variable closure)))))
+      (if conn
+          (unless eldoc-mode
+            ;; Any earlier attempt to activate eldoc-mode
+            ;; fails for lack of eldoc-documentation-functions.
+            (when (memq eldoc-documentation-function '(nil ignore))
+              ;; Primarily for emacs-27 when eldoc-documentation-function
+              ;; meant a very different thing.
+              (setq-local eldoc-documentation-function
+                          (apply-partially
+                           #'xlsp-do-request-hover
+                           (gv-ref eldoc-cache)
+                           :sync
+                           (current-buffer)
+                           (lambda (&rest args)
+                             (identity (car args))))))
+            (eldoc-mode))
+        (cl-loop for (hooks . hook) in xlsp-hooks-alist
+                 do (remove-hook hooks hook :local)
+                 finally (kill-local-variable 'xlsp-hooks-alist)))))
   "Ngl, this is ridonk.")
 
 (cl-defmethod jsonrpc-connection-ready-p ((conn xlsp-connection) _what)
