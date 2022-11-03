@@ -53,10 +53,15 @@ his fooness")
                     (step-label (car step))
                     (step-plist (cdr step))
                     (match-p (re-search-backward
-                              "^\\[?\\([^]]+\\)\\]? (id:\\s-*\\([0-9]+\\))"
+                              (concat
+                               "^\\[?\\([^]( ]+\\)\\]? "
+                               "\\((id:\\s-*\\([0-9]+\\))\\)?"
+                               ".+ [0-9]+:$")
                               beg t))
                     (what (match-string 1))
-                    (id (string-to-number (match-string 2)))
+                    (id (if (match-string 3)
+                            (string-to-number (match-string 3))
+                          :nonce))
                     (message (progn
                                (forward-line 1)
                                (read (current-buffer)))))
@@ -130,27 +135,52 @@ void main (void) {
     ;; Macros in BODY are expanded when the test is defined, not when it
     ;; is run.  If a macro (possibly with side effects) is to be tested,
     ;; it has to be wrapped in `(eval (quote ...))'.
-    (global-xlsp-mode)
     (eval
      (quote
       (test-xlsp-should
           ((init0 :what "client-request" :method xlsp-request-initialize)
            (init1 :what "server-reply" :ref init0))
+        (require 'cc-mode)
+        (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
+          (with-current-buffer (find-file "foo.c")
+            (should xlsp-mode))))))
+    (unless (< emacs-major-version 28)
+      ;; How does one set eldoc-documentation-function in emacs-27?
+      (with-current-buffer "foo.c"
+        (eval
+         (quote
+          (test-xlsp-should
+              ((hover0 :what "client-request"
+                       :method xlsp-request-text-document/hover)
+               (hover1 :what "server-reply" :ref hover0))
+            (should eldoc-mode)
+            (ert-simulate-command '(search-forward "main"))
+            (ert-run-idle-timers))))
+        (should-error ; eldoc-cache forestalls another hover request
+         (eval
+          (quote
+           (test-xlsp-should
+               ((hover0 :what "client-request"
+                        :method xlsp-request-text-document/hover))
+             :timeout 1
+             (ert-simulate-command '(backward-char))
+             (ert-simulate-command '(forward-char))
+             (ert-run-idle-timers)))))))
+    (eval
+     (quote
+      (test-xlsp-should
+          ((did-open :what "client-notification"
+                     :method xlsp-notification-text-document/did-open))
+        (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
+          (with-current-buffer (find-file "foo.h")
+            (should xlsp-mode))))))
+    (eval
+     (quote
+      (test-xlsp-should
+          ((did-close :what "client-notification"
+                      :method xlsp-notification-text-document/did-close)
+           (did-open :what "client-notification"
+                      :method xlsp-notification-text-document/did-open))
         (with-current-buffer (find-file "foo.c")
-          (should xlsp-mode)))))
-    (with-current-buffer "foo.c"
-      (eval
-       (quote
-        (test-xlsp-should
-            ((hover0 :what "client-request" :method xlsp-request-text-document/hover)
-             (hover1 :what "server-reply" :ref hover0))
-          (should eldoc-mode)
-          (ert-simulate-command '(search-forward "main"))
-          (ert-run-idle-timers))))
-      (should-error ; eldoc-cache forestalls another hover request
-       (eval
-        (quote
-         (test-xlsp-should
-             ((hover0 :what "client-request" :method xlsp-request-text-document/hover))
-           :timeout 1
-           (backward-char))))))))
+          (xlsp-mode -1)
+          (xlsp-mode)))))))
