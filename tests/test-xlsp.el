@@ -84,8 +84,10 @@ his fooness")
 
 (cl-defmacro test-xlsp-should ((&rest steps)
                                &rest body
-                               &key (timeout 5) &allow-other-keys)
+                               &key (timeout 3) &allow-other-keys)
   (declare (indent 1))
+  (when (getenv "CI")
+    (setq timeout (* 4 timeout)))
   (cl-remf body :timeout)
   `(let* ((conn (xlsp-connection-get (current-buffer)))
           (beg (when conn
