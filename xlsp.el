@@ -41,6 +41,11 @@
 ;; ---------------------------------
 ;; It is merely a differentiator, just as the "x" in "xemacs" had been
 ;; (contrary to the popular misconception that it referenced X11).
+;;
+;; Credits
+;; -------
+;; Logic, some transcribed verbatim, taken from GNU eglot.
+;; Functions missing in emacs-27 and emacs-28 taken from GNU emacs-29.
 
 ;;; Code:
 
@@ -119,6 +124,7 @@ When undo is disabled this behaves like `progn'."
 ;; Commercial Emacs
 (declare-function tree-sitter-node-type "tree-sitter")
 (declare-function tree-sitter-node-at "tree-sitter")
+(declare-function c-indent-line "cc-cmds")
 
 (defclass xlsp-connection (jsonrpc-process-connection)
   ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
@@ -508,8 +514,8 @@ pairs for its frontends."
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends.  The eldoc situation got even messier
-in v28, if that were possible, and SYNC* needs to be true
-to retrofit current logic to v27."
+in v28, if that were possible, and a SYNC* value of true
+retrofits current logic to v27."
   (let ((heuristic-target (with-current-buffer buffer
                             (thing-at-point 'symbol)))
         (eldoc-cb-args '(:buffer t)))
@@ -618,6 +624,113 @@ to retrofit current logic to v27."
                                                   'xlsp-struct-location-link)
                                  result-array)))
       locations)))
+
+(defsubst xlsp-formatting-options (buffer)
+  (defvar c-basic-offset)
+  (with-current-buffer buffer
+    (make-xlsp-struct-formatting-options
+     :tab-size (if (and (eq indent-line-function #'c-indent-line)
+                        (fixnump c-basic-offset))
+                   c-basic-offset
+                 tab-width)
+     :insert-spaces (if indent-tabs-mode :json-false t)
+     :trim-final-newlines
+     ;; not serious
+     (if delete-trailing-lines
+         t
+       :json-false)
+     :trim-trailing-whitespace
+     ;; not serious
+     (if (memq 'delete-trailing-whitespace before-save-hook)
+         t
+       :json-false)
+     :insert-final-newline
+     (if require-final-newline
+         t
+       :json-false))))
+
+(defun xlsp-do-request-formatting (buffer)
+  (let* ((conn (xlsp-connection-get buffer))
+         (params (make-xlsp-struct-document-formatting-params
+                  :text-document (make-xlsp-struct-text-document-identifier
+                                  :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                  :options (xlsp-formatting-options buffer)))
+         (result-array (xlsp-sync-then-request
+                        buffer conn
+                        xlsp-request-text-document/formatting
+                        (xlsp-jsonify params))))
+    (when-let ((edits
+                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                         result-array)))
+      (xlsp-apply-text-edits edits))))
+
+(defun xlsp-do-request-range-formatting (buffer beg end)
+  (let* ((conn (xlsp-connection-get buffer))
+         (params (make-xlsp-struct-document-range-formatting-params
+                  :text-document (make-xlsp-struct-text-document-identifier
+                                  :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                  :range (make-xlsp-struct-range
+                          :start (let ((their-pos (xlsp-their-pos buffer beg)))
+                                   (make-xlsp-struct-position
+                                    :line (car their-pos)
+                                    :character (cdr their-pos)))
+                          :end (let ((their-pos (xlsp-their-pos buffer end)))
+                                 (make-xlsp-struct-position
+                                  :line (car their-pos)
+                                  :character (cdr their-pos))))
+                  :options (xlsp-formatting-options buffer)))
+         (result-array (xlsp-sync-then-request
+                        buffer conn
+                        xlsp-request-text-document/range-formatting
+                        (xlsp-jsonify params))))
+    (when-let ((edits
+                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                         result-array)))
+      (xlsp-apply-text-edits edits))))
+
+(defun xlsp-do-request-on-type-formatting (buffer pos on-character)
+  "LSP calls this qq/on type formatting/ where type is a verb.
+Usually nouns follow prepositions (qq/on/), and given types as
+nouns, e.g., variable types, are so prevalent in software, the
+naming is fairly egregious."
+  (let* ((conn (xlsp-connection-get buffer))
+         (params (make-xlsp-struct-document-on-type-formatting-params
+                 :text-document (make-xlsp-struct-text-document-identifier
+                                 :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                 :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                             (make-xlsp-struct-position
+                              :line (car their-pos)
+                              :character (cdr their-pos)))
+                 :ch (char-to-string on-character)
+                 :options (xlsp-formatting-options buffer)))
+         (result-array (xlsp-sync-then-request
+                        buffer conn
+                        xlsp-request-text-document/on-type-formatting
+                        (xlsp-jsonify params))))
+    (when-let ((edits
+                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                         result-array)))
+      (xlsp-apply-text-edits edits))))
+
+(defun xlsp-apply-text-edits (edits)
+  (let ((tick (buffer-chars-modified-tick)))
+    (condition-case err
+        (with-undo-amalgamate
+          (dolist (edit (reverse (append edits nil)))
+            (let* ((new-text (xlsp-struct-text-edit-new-text edit))
+                   (range (xlsp-struct-text-edit-range edit))
+                   (beg (xlsp-our-pos (current-buffer)
+                                      (xlsp-struct-range-start range)))
+                   (end (xlsp-our-pos (current-buffer)
+                                      (xlsp-struct-range-end range))))
+              (replace-region-contents
+               beg end (apply-partially #'identity new-text)))))
+      (error (let ((inhibit-message t))
+               (unless (= (buffer-chars-modified-tick) tick)
+                 (undo-boundary)
+                 (undo-only)))
+             (message "xlsp-apply-text-edits: %s"
+                      (error-message-string err))))))
 
 (defcustom xlsp-events-buffer-size (truncate 2e6)
   "Events buffer max size.  Zero for no buffer, nil for infinite."
@@ -841,27 +954,8 @@ whether to cache CANDIDATES."
               (post-completion
                (when-let ((index-of (alist-get 'index-of completion-state))
                           (additionses (alist-get 'additionses completion-state))
-                          (additions (nth (gethash candidate index-of) additionses))
-                          (tick (buffer-chars-modified-tick)))
-                 (undo-boundary)
-                 (condition-case err
-                     (with-undo-amalgamate
-                       (dolist (addition (append additions nil))
-                         (let* ((new-text (xlsp-struct-text-edit-new-text addition))
-                                (range (xlsp-struct-text-edit-range addition))
-                                (beg (xlsp-our-pos (current-buffer)
-                                                   (xlsp-struct-range-start range)))
-                                (end (xlsp-our-pos (current-buffer)
-                                                   (xlsp-struct-range-end range))))
-                           (replace-region-contents
-                            beg end (apply-partially
-                                     #'identity
-                                     new-text)))))
-                   (error (let ((inhibit-message t))
-                            (unless (= (buffer-chars-modified-tick) tick)
-                              (undo-only)))
-                          (message "post-completion error: %s"
-                                   (error-message-string err))))))
+                          (additions (nth (gethash candidate index-of) additionses)))
+                 (xlsp-apply-text-edits additions)))
               (prefix
                ;; We use the "prefix" directive only to predict whether
                ;; issuing a candidates call will be fruitful.  Only
@@ -1221,13 +1315,31 @@ whether to cache CANDIDATES."
            (lambda (conn)
              (xlsp-capability
                conn xlsp-struct-server-capabilities-definition-provider)))
+          (format-predicate
+           (lambda (conn) (xlsp-format-trigger-characters conn)))
           ;; Note a clear_message() is called on every keystroke,
           ;; but the elisp-mode eldoc functions are fast enough
           ;; to mask a flickering echo area.  Not so, xlsp.
           (eldoc-cache '(nil . nil)))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
-               `([before-change-functions
+               `([post-self-insert-hook
+                  ,format-predicate
+                  (lambda ()
+                    (lambda ()
+                      ;; how kbd_buffer_get_event calls make_lispy_event
+                      ;; to yield the symbol 'return from lispy_function_keys
+                      ;; is not yet clear.
+                      (let ((event last-input-event))
+                        (when (eq event 'return)
+                          (setq event ?\n))
+                        (when (and (characterp event)
+                                   (memq event
+                                         (xlsp-format-trigger-characters
+                                          (xlsp-connection-get (current-buffer)))))
+                          (xlsp-do-request-on-type-formatting
+                           (current-buffer) (point) event)))))]
+                 [before-change-functions
                   ,did-change-predicate
                   xlsp-did-change-text-document]
                  [after-change-functions
@@ -1430,6 +1542,44 @@ The problem is that goes from glob to files, and I need converse."
     (let ((id (intern (xlsp-struct-unregistration-id unreg))))
       (mapc #'file-notify-rm-watch (gv id))
       (setf (gv id) (assq-delete-all id (gv id))))))
+
+(defun xlsp-format-trigger-characters (conn)
+  (when-let ((options
+              (xlsp-capability
+                conn
+                xlsp-struct-server-capabilities-document-on-type-formatting-provider)))
+    (cl-remove-if
+     #'zerop ; string-to-char of empty string is NUL character
+     (seq-keep
+      #'string-to-char
+      (cons (xlsp-struct-document-on-type-formatting-options-first-trigger-character
+             options)
+            (append
+             (xlsp-struct-document-on-type-formatting-options-more-trigger-character
+              options)
+             nil))))))
+
+;;;###autoload
+(defun xlsp-format-buffer ()
+  (interactive)
+  (unless xlsp-mode
+    (xlsp-mode))
+  (when-let ((conn (xlsp-connection-get (current-buffer)))
+             (capable-p
+              (xlsp-capability
+                conn xlsp-struct-server-capabilities-document-formatting-provider)))
+    (xlsp-do-request-formatting (current-buffer))))
+
+;;;###autoload
+(defun xlsp-format-region (beg end)
+  (interactive "r")
+  (unless xlsp-mode
+    (xlsp-mode))
+  (when-let ((conn (xlsp-connection-get (current-buffer)))
+             (capable-p
+              (xlsp-capability
+                conn xlsp-struct-server-capabilities-document-range-formatting-provider)))
+    (xlsp-do-request-range-formatting (current-buffer) beg end)))
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
 
