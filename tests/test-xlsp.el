@@ -162,13 +162,25 @@ void main (void) {
            (comp1 :what "server-reply" :ref comp0))
         (should company-mode)
         (re-search-forward (regexp-quote "{"))
-        (dolist (char (seq-map #'identity "\n  fprin"))
+        (dolist (char (seq-map #'identity "\nfprin"))
           (ert-simulate-command `(self-insert-command 1 ,char)))
         (should company-timer)
         (ert-run-idle-timers))))
     (defvar company-candidates)
     (should company-candidates)
     (ert-simulate-command '(company-complete))
+
+    ;; test onTypeFormatting...
+    (goto-char (line-beginning-position))
+    (should (looking-at (regexp-quote "f")))
+    (save-excursion
+      (end-of-line)
+      (dolist (char (seq-map #'identity "(stderr, \"foo\");"))
+        (ert-simulate-command `(self-insert-command 1 ,char)))
+      (setq last-input-event ?\n)
+      (ert-simulate-command '(self-insert-command 1 ?\n)))
+    (should (looking-at (regexp-quote "  ")))
+
     (should (save-excursion (re-search-backward (regexp-quote "foo.h"))))
     (eval
      (quote
@@ -180,6 +192,7 @@ void main (void) {
                      :method xlsp-notification-text-document/did-open))
         (ert-simulate-command `(xref-find-definitions "foo.h")))))
     (should (get-buffer "foo.h"))
+
     (eval
      (quote
       (test-xlsp-should

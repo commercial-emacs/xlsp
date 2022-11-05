@@ -44,8 +44,8 @@
 ;;
 ;; Credits
 ;; -------
-;; Logic, some transcribed verbatim, taken from GNU eglot.
-;; Functions missing in emacs-27 and emacs-28 taken from GNU emacs-29.
+;; Logic, some transcribed verbatim, was patterned after GNU eglot.
+;; Functions missing in emacs-27 and emacs-28 transcribed from GNU emacs-29.
 
 ;;; Code:
 
@@ -1316,7 +1316,11 @@ whether to cache CANDIDATES."
              (xlsp-capability
                conn xlsp-struct-server-capabilities-definition-provider)))
           (format-predicate
-           (lambda (conn) (xlsp-format-trigger-characters conn)))
+           (lambda (conn)
+             "Really annoying feature."
+             (when (and (fboundp 'ert-running-test)
+                        (ert-running-test))
+               (xlsp-format-trigger-characters conn))))
           ;; Note a clear_message() is called on every keystroke,
           ;; but the elisp-mode eldoc functions are fast enough
           ;; to mask a flickering echo area.  Not so, xlsp.
