@@ -1354,7 +1354,8 @@ whether to cache CANDIDATES."
                     (apply-partially #'xlsp-mode -1))]
                  [before-revert-hook
                   ,did-open-close-predicate
-                  xlsp-did-close-text-document]
+                  (lambda ()
+                    (apply-partially #'xlsp-mode -1))]
                  ;; xlsp-mode takes care of after-revert.
                  [eldoc-documentation-functions
                   ,signature-help-predicate
