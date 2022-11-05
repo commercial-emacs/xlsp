@@ -44,6 +44,11 @@ Usage
    ---------------------------------
    It is merely a differentiator, just as the "x" in "xemacs" had been
    (contrary to the popular misconception that it referenced X11).
+   
+   Credits
+   -------
+   Logic, some transcribed verbatim, was patterned after GNU eglot.
+   Functions missing in emacs-27 and emacs-28 transcribed from GNU emacs-29.
 
 .. |build-status|
    image:: https://github.com/commercial-emacs/xlsp/workflows/CI/badge.svg?branch=dev
