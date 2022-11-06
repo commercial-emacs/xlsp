@@ -23,9 +23,42 @@
                  (cons (symbol-value (car clause)) (cdr clause)))
                clauses)))
 
+(xlsp-register-handler request xlsp-request-workspace/configuration
+                       (conn params)
+  "A .dir-locals.el might look like:
+\\((go-mode
+    (xlsp-workspace-configuration
+     :gopls ((:ui.completion.usePlaceholders t)
+             (:codelenses (:generate :json-false)
+                          (:gc_details t))))))"
+  (apply
+   #'xlsp-array
+   (seq-map
+    (lambda (item)
+      (let ((scope-uri (xlsp-struct-configuration-item-scope-uri item))
+            (section (xlsp-struct-configuration-item-section item)))
+        (when-let ((path (xlsp-unurify scope-uri))
+                   (default-directory (when (file-directory-p path)
+                                        (file-name-as-directory path))))
+          (with-temp-buffer
+            ;; Ad hoc Olsen in 1b21ee0:
+            ;; "If the [dir-locals] element is of the form (MAJOR-MODE . ALIST),
+            ;; and the buffer's major mode is derived from MAJOR-MODE,
+            ;; then all the variables in ALIST are applied."
+            (setq-local major-mode
+                        (buffer-local-value 'major-mode
+                                            (get-buffer (car (oref conn buffers)))))
+            ;; Calls `dir-locals-find-file' to find nearest .dir-locals.el.
+            (hack-dir-local-variables-non-file-buffer)
+            (or (plist-get (or (bound-and-true-p xlsp-workspace-configuration)
+                               (bound-and-true-p eglot-workspace-configuration))
+                           (intern (concat ":" section)))
+                xlsp-struct-empty)))))
+    (xlsp-struct-configuration-params-items params))))
+
 (xlsp-register-handler request xlsp-request-client/register-capability
                        (conn params)
-  (prog1 nil
+  (prog1 nil ; provisional
     (seq-map
      (lambda (reg)
        (let ((method (intern-soft (xlsp-struct-registration-method reg))))
@@ -36,7 +69,7 @@
 
 (xlsp-register-handler request xlsp-request-client/unregister-capability
                        (conn params)
-  (prog1 nil
+  (prog1 nil ; provisional
     (seq-map
      (lambda (unreg)
        (let ((method (intern-soft (xlsp-struct-unregistration-method unreg))))

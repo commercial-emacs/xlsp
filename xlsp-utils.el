@@ -28,6 +28,13 @@
   :prefix "xlsp-"
   :group 'applications)
 
+(defclass xlsp-connection (jsonrpc-process-connection)
+  ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
+   (capabilities :initform nil)
+   (server-info :initform nil)
+   (buffers :initform nil)
+   (watched-files :initform nil)))
+
 (defun xlsp-urify (path)
   "Go from path to RFC3986.
 All RFCs are unintelligible, and this one is no exception.
@@ -95,7 +102,11 @@ lsp/3.17/specification/#uri"
       type)))
 
 (defmacro xlsp-register-handler (type method-sym formal-args &rest body)
-  (declare (indent 3))
+  "Register handler.
+How does `defmacro' get its eldoc to register the following?
+
+\(fn TYPE METHOD-SYM FORMAL-ARGS &optional [DOCSTRING] BODY..."
+  (declare (doc-string 4) (indent 3))
   (cl-destructuring-bind (conn params)
       formal-args
     `(cl-defmethod ,(intern (concat "xlsp-handle-" (symbol-name type)))

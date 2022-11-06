@@ -23,20 +23,6 @@
 ;; -----------------------
 ;; M-x customize-option RET xlsp-server-invocations RET
 ;;
-;; Per-workspace configuration
-;; ---------------------------
-;; Loitering .dir-locals.el files are a pain in the tuchus.
-;; If project-specific config is a must, we recommend this pain in
-;; your .emacs instead:
-;;
-;; (dir-locals-set-class-variables 'my-project-lsp
-;;   '((python-mode
-;;      (xlsp-workspace-configuration
-;;       (:pylsp (:plugins (:jedi_completion (:include_params t :fuzzy t)
-;;                          :pylint (:enabled :json-false)))))))
-;;
-;; (dir-locals-set-directory-class "my-project-dir" 'my-project-lsp)
-;;
 ;; What the "x" in "xlsp" references
 ;; ---------------------------------
 ;; It is merely a differentiator, just as the "x" in "xemacs" had been
@@ -125,13 +111,6 @@ When undo is disabled this behaves like `progn'."
 (declare-function tree-sitter-node-type "tree-sitter")
 (declare-function tree-sitter-node-at "tree-sitter")
 (declare-function c-indent-line "cc-cmds")
-
-(defclass xlsp-connection (jsonrpc-process-connection)
-  ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
-   (capabilities :initform nil)
-   (server-info :initform nil)
-   (buffers :initform nil)
-   (watched-files :initform nil)))
 
 (defmacro xlsp-advise-tag (variable)
   `(symbol-name ',variable))
@@ -338,7 +317,7 @@ I use inode in case project directory gets renamed.")
 (defalias 'xlsp-default-completion-filter
   (lambda (query items)
     (cl-loop for item in items
-             when (string-prefix-p query (xlsp-new-text item) :ignore-case)
+             when (string-prefix-p query (xlsp-new-text item))
              collect item)))
 
 (defvar xlsp-completion-filter-function (symbol-function 'xlsp-default-completion-filter)
@@ -1054,24 +1033,19 @@ whether to cache CANDIDATES."
           (xlsp-mode -1)))))
 
   (let ((conn (xlsp-gv-connection conn-key)))
-    ;; because heavy hitters like project-kill-buffers can blitzkrieg
-    ;; buffer landscape, this needs to be synchronous.
     (when (and conn
                (jsonrpc-running-p conn)
                (buffer-live-p (jsonrpc--events-buffer conn))
                (buffer-live-p (process-buffer (jsonrpc--process conn))))
-      (condition-case nil
-          (jsonrpc-request conn xlsp-request-shutdown nil)
-        (jsonrpc-error))
-      (when (jsonrpc-running-p conn)
-        ;; eglot got this right by just firing off the exit notification
-        ;; sight unseen.  Ideally it'd issue from the success-fn callback
-        ;; of xlsp-request-shutdown, but jsonrpc--process-filter
-        ;; triggers that callback, which could kill the connection,
-        ;; and jsonrpc--process-filter lives in connection's buffer.
-        ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
-        (cl-letf (((symbol-function 'display-warning) #'ignore))
-          (jsonrpc-notify conn xlsp-notification-exit nil))))
+      (jsonrpc-async-request conn xlsp-request-shutdown nil)
+      ;; eglot got this right by just firing off the exit notification
+      ;; sight unseen.  Ideally it'd issue from the success-fn callback
+      ;; of xlsp-request-shutdown, but jsonrpc--process-filter
+      ;; triggers that callback, which could kill the connection,
+      ;; and jsonrpc--process-filter lives in connection's buffer.
+      ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
+      (cl-letf (((symbol-function 'display-warning) #'ignore))
+        (jsonrpc-notify conn xlsp-notification-exit nil)))
     ;; Unfortunately this cannot wait because user could
     ;; toggle xlsp-mode very quickly.
     (cl-letf (((symbol-function 'display-warning) #'ignore)
@@ -1138,34 +1112,37 @@ whether to cache CANDIDATES."
                       (xlsp-struct-initialize-result-capabilities result))
                 (oset conn server-info
                       (xlsp-struct-initialize-result-server-info result))
+                (condition-case err
+                    (progn
+                      ;; Ack
+                      (jsonrpc-notify conn xlsp-notification-initialized
+                                      (xlsp-jsonify (make-xlsp-struct-initialized-params)))
 
-                ;; Ack
-                (jsonrpc-notify conn xlsp-notification-initialized
-                                (xlsp-jsonify (make-xlsp-struct-initialized-params)))
+                      ;; Register project files
+                      (with-xlsp-connection (conn-key project-dir)
+                          buffer
+                        (dolist (b (cl-remove-if-not
+                                    #'buffer-file-name
+                                    (when-let ((proj (project-current nil project-dir)))
+                                      (project-buffers proj))))
+                          (with-current-buffer b
+                            (when (equal major-mode (car conn-key))
+                              ;; Now that we know capabilities, selectively activate hooks
+                              (when xlsp-mode
+                                (xlsp-toggle-hooks nil) ; cleanse palate
+                                (xlsp-toggle-hooks conn)
+                                (funcall (xlsp-did-open-text-document)))))))
 
-                ;; Register project files
-                (with-xlsp-connection (conn-key project-dir)
-                    buffer
-                  (dolist (b (cl-remove-if-not
-                              #'buffer-file-name
-                              (when-let ((proj (project-current nil project-dir)))
-                                (project-buffers proj))))
-                    (with-current-buffer b
-                      (when (equal major-mode (car conn-key))
-                        ;; Now that we know capabilities, selectively activate hooks
-                        (when xlsp-mode
-                          (xlsp-toggle-hooks nil) ; cleanse palate
-                          (xlsp-toggle-hooks conn)
-                          (funcall (xlsp-did-open-text-document)))))))
-
-                ;; Register workspace-specific config, if any.
-                ;; Amazingly, pyright won't budge without this.
-                (jsonrpc-notify
-                 conn xlsp-notification-workspace/did-change-configuration
-                 (xlsp-jsonify
-                  (make-xlsp-struct-did-change-configuration-params
-                   :settings (or (bound-and-true-p xlsp-workspace-configuration)
-                                 xlsp-struct-empty))))))))
+                      ;; Register workspace-specific config, if any.
+                      ;; Amazingly, pyright won't budge without this.
+                      (jsonrpc-notify
+                       conn xlsp-notification-workspace/did-change-configuration
+                       (xlsp-jsonify
+                        (make-xlsp-struct-did-change-configuration-params
+                         :settings xlsp-struct-empty))))
+                  (error
+                   (xlsp-message "success-fn: %s" (error-message-string err))
+                   (xlsp-connection-remove buffer)))))))
          :error-fn
          (lambda (error)
            (xlsp-message "%s %s (%s)" name (plist-get error :message)

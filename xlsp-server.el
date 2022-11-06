@@ -12,7 +12,8 @@
           (c++-mode . "clangd")
           (objc-mode . "clangd")
           (rust-mode . "rust-analyzer")
-          (python-mode . "pyright-langserver --stdio")))
+          (python-mode . "pyright-langserver --stdio")
+          (go-mode . "gopls")))
   "Alist values must begin with an executable, e.g., clangd.
 If you need to set environment variables,
 try \"env FOO=foo bash -c \\='echo $FOO\\='\"."
