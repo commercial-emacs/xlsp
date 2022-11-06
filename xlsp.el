@@ -975,16 +975,17 @@ whether to cache CANDIDATES."
           (add-function :override (symbol-function 'company--contains)
                         xlsp-advise-contains
                         `((name . ,(xlsp-advise-tag xlsp-advise-contains))))
-          (cl-macrolet ((unchanged-p
+          (cl-macrolet ((dont-play
                           (var)
-                          `(eq (symbol-value ',var)
-                               (car (get ',var 'standard-value)))))
-            (unless (unchanged-p company-minimum-prefix-length)
-              (setq-local company-minimum-prefix-length 3))
-            (unless (unchanged-p company-tooltip-idle-delay)
-              (setq-local company-tooltip-idle-delay 0.5))
-            (unless (unchanged-p company-idle-delay)
-              (setq-local company-idle-delay 0.2)))
+                          `(let ((standard-value
+                                  (eval (car (get ',var 'standard-value)))))
+                             (unless (eq (symbol-value ',var) standard-value)
+                               (setq-local ,var standard-value)))))
+            ;; Idle hands and knobs account for emacs's rap for fragility.
+            (dont-play company-minimum-prefix-length)
+            (dont-play company-tooltip-idle-delay)
+            (dont-play company-idle-delay)
+            (dont-play completion-styles))
           (unless company-mode
             (company-mode))
           (setq-local company-backends (cons backend company-backends)
@@ -1020,7 +1021,8 @@ whether to cache CANDIDATES."
                                     company-tooltip-idle-delay
                                     company-lighter
                                     eldoc-documentation-function
-                                    xlsp-synchronize-closure)))))
+                                    xlsp-synchronize-closure
+                                    completion-styles)))))
 
 (defun xlsp--connection-destroy (conn-key project-dir)
   (dolist (b (cl-remove-if-not
