@@ -1,9 +1,5 @@
 ;;; xlsp-xref.el -*- lexical-binding: t; -*-
 
-;;; Commentary:
-
-;;; Code:
-
 (require 'xlsp-utils)
 (require 'xlsp-struct)
 (require 'xref)

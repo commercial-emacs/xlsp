@@ -5,7 +5,7 @@ Install
 ::
 
    git clone https://github.com/commercial-emacs/xlsp.git
-   make install
+   make -C xlsp install
 
 Usage
 =====

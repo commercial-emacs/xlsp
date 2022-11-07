@@ -42,70 +42,7 @@
 (require 'xlsp-company)
 (require 'xlsp-server)
 (require 'xlsp-xref)
-
-(eval-when-compile
-  (when (< emacs-major-version 28)
-    (defvar xlsp-synchronize-closure)
-    (defvar xlsp-did-change-text-document)
-    (defvar xlsp-did-save-text-document)
-    (defvar xlsp-did-open-text-document)
-    (defvar xlsp-did-close-text-document)
-    (defvar minibuffer-default-prompt-format)
-    (define-derived-mode lisp-data-mode prog-mode "Lisp-Data"
-      "Major mode for buffers holding data written in Lisp syntax."
-      :group 'lisp
-      (lisp-mode-variables nil t nil)
-      (setq-local electric-quote-string t)
-      (setq imenu-case-fold-search nil))
-    (gv-define-expander plist-get
-      (lambda (do plist prop)
-        (macroexp-let2 macroexp-copyable-p key prop
-          (gv-letplace (getter setter) plist
-            (macroexp-let2 nil p `(cdr (plist-member ,getter ,key))
-              (funcall do
-                       `(car ,p)
-                       (lambda (val)
-                         `(if ,p
-                              (setcar ,p ,val)
-                            ,(funcall setter `(cons ,key (cons ,val ,getter)))))))))))
-    (defmacro project-root (project)
-      (with-suppressed-warnings ((obsolete project-roots))
-        `(car (project-roots ,project))))
-    (defmacro project-buffers (project)
-      `(let ((root (expand-file-name (file-name-as-directory
-                                      (project-root ,project)))))
-         (nreverse
-          (cl-loop for b in (buffer-list)
-                   for dd = (expand-file-name (buffer-local-value
-                                               'default-directory b))
-                   when (string-prefix-p root dd)
-                   collect b)))))
-  (when (< emacs-major-version 29)
-    (defmacro with-undo-amalgamate (&rest body)
-      "Like `progn' but perform BODY with amalgamated undo barriers.
-
-This allows multiple operations to be undone in a single step.
-When undo is disabled this behaves like `progn'."
-      (declare (indent 0) (debug t))
-      (let ((handle (make-symbol "--change-group-handle--")))
-        `(let ((,handle (prepare-change-group))
-               ;; Don't truncate any undo data in the middle of this,
-               ;; otherwise Emacs might truncate part of the resulting
-               ;; undo step: we want to mimic the behavior we'd get if the
-               ;; undo-boundaries were never added in the first place.
-               (undo-outer-limit nil)
-               (undo-limit most-positive-fixnum)
-               (undo-strong-limit most-positive-fixnum))
-           (unwind-protect
-               (progn
-                 (activate-change-group ,handle)
-                 ,@body)
-             (progn
-               (accept-change-group ,handle)
-               (undo-amalgamate-change-group ,handle))))))
-    (defun seq-keep (function sequence)
-      "Apply FUNCTION to SEQUENCE and return all non-nil results."
-      (delq nil (seq-map function sequence)))))
+(require 'xlsp-compilation)
 
 ;; Commercial Emacs
 (declare-function tree-sitter-node-type "tree-sitter")
@@ -221,6 +158,17 @@ I use inode in case project directory gets renamed.")
   (version 0 :type integer)
   (events nil :type (list-of xlsp-literal))
   (timer nil :type vector))
+
+(cl-defstruct xlsp-completion-state
+  "Frameworks generally give structure.  Company-mode does not."
+  (beg nil :type integer)
+  (end nil :type integer)
+  (cache-p nil :type boolean)
+  (kinds nil :type list)
+  (details nil :type list)
+  (trigger-char nil :type character)
+  (additionses nil :type list)
+  (index-of (make-hash-table :test #'equal) :type hash-table))
 
 (defalias 'xlsp-synchronize-closure
   (lambda ()
@@ -549,7 +497,11 @@ retrofits current logic to v27."
            (xlsp-jsonify params)
            :success-fn success-fn :error-fn error-fn))))))
 
-(defun xlsp-do-request-completion (buffer pos callback trigger-char)
+(cl-defun xlsp-do-request-completion (buffer pos callback trigger-char
+                                      &key sync)
+  "Note SYNC argument and qq/sync/ in xlsp-sync-then-request are distinct.
+The first says whether to jsonrpc-async-request or jsonrpc-request.
+The second refers to synchronizing the document in LSP."
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-completion-params
                       :text-document (make-xlsp-struct-text-document-identifier
@@ -565,18 +517,24 @@ retrofits current logic to v27."
                                   xlsp-completion-trigger-kind/invoked)
                                 :trigger-character
                                 (when trigger-char (char-to-string trigger-char))))))
-    (xlsp-sync-then-request
-     buffer conn
-     xlsp-request-text-document/completion
-     (xlsp-jsonify params)
-     :success-fn
-     (lambda (result-plist)
-       (funcall callback (xlsp-unjsonify 'xlsp-struct-completion-list result-plist)))
-     :error-fn
-     (lambda (error)
-       (xlsp-message "xlsp-do-request-completion: %s (%s)"
-                     (plist-get error :message)
-                     (plist-get error :code))))))
+    (if sync
+        (let ((result-plist (xlsp-sync-then-request
+                             buffer conn
+                             xlsp-request-text-document/completion
+                             (xlsp-jsonify params))))
+          (funcall callback (xlsp-unjsonify 'xlsp-struct-completion-list result-plist)))
+      (xlsp-sync-then-request
+       buffer conn
+       xlsp-request-text-document/completion
+       (xlsp-jsonify params)
+       :success-fn
+       (lambda (result-plist)
+         (funcall callback (xlsp-unjsonify 'xlsp-struct-completion-list result-plist)))
+       :error-fn
+       (lambda (error)
+         (xlsp-message "xlsp-do-request-completion: %s (%s)"
+                       (plist-get error :message)
+                       (plist-get error :code)))))))
 
 (defun xlsp-do-request-definition (buffer pos)
   "This retrieves a location, not a definition."
@@ -745,142 +703,118 @@ naming is fairly egregious."
   "Alist entries of the form (HOOKS-SYM . HOOK-COMPILED-FUNC).
 Hooks must be tracked since closures ruin remove-hook's #'equal criterion.")
 
+(defun xlsp-completion-callback (state* buffer* cb* completion-list)
+  "The interval [BEG, END) spans the region supplantable by
+CANDIDATES.  CACHE-P advises `company-calculate-completions'
+whether to cache CANDIDATES."
+  (if-let ((items
+            (append
+             (xlsp-struct-completion-list-items completion-list) nil))
+           (beg-end (if-let ((has-text-edit
+                              (seq-find #'xlsp-struct-completion-item-text-edit
+                                        items))
+                             (range (xlsp-struct-text-edit-range
+                                     (xlsp-struct-completion-item-text-edit
+                                      has-text-edit))))
+                        ;; Good, server has specific range info.
+                        (cons (xlsp-our-pos buffer* (xlsp-struct-range-start range))
+                              (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
+                      ;; Bad, let's hope server agrees with us.
+                      (with-current-buffer buffer*
+                        (or (bounds-of-thing-at-point 'symbol)
+                            `(,(point) . ,(point))))))
+           (beg (car beg-end))
+           (end (cdr beg-end))
+           (extant (with-current-buffer buffer*
+                     ;; server often out of sync by design
+                     (ignore-errors (buffer-substring-no-properties
+                                     beg end))))
+           (filtered-items
+            (sort
+             (funcall
+              (or xlsp-completion-filter-function
+                  (symbol-function 'xlsp-default-completion-filter))
+              extant items)
+             (lambda (i1 i2)
+               (cond ((not (string-prefix-p extant (xlsp-new-text i1)))
+                      i2)
+                     ((not (string-prefix-p extant (xlsp-new-text i2)))
+                      i1)
+                     (t
+                      (let ((s1 (xlsp-struct-completion-item-sort-text i1))
+                            (s2 (xlsp-struct-completion-item-sort-text i2)))
+                        (if (and s1 s2)
+                            (string< s1 s2)
+                          (not s2))))))))
+           (texts (mapcar #'xlsp-new-text filtered-items)))
+      (prog1 (funcall cb* texts)
+        (setf (alist-get 'beg state*) beg
+              (alist-get 'end state*) end
+              (alist-get 'cache-p state*) (not (xlsp-struct-completion-list-is-incomplete completion-list))
+              (alist-get 'kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
+              (alist-get 'details state*) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
+              (alist-get 'additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
+        (clrhash (alist-get 'index-of state*))
+        (dotimes (i (length texts))
+          (puthash (nth i texts) i
+                   (alist-get 'index-of state*)))
+        (when (xlsp-capability (xlsp-connection-get buffer*)
+                xlsp-struct-server-capabilities-completion-provider
+                xlsp-struct-completion-options-resolve-provider)
+          ;; "By default the request can only delay the
+          ;; computation of the detail and documentation
+          ;; properties."
+          (cl-loop with conn = (xlsp-connection-get buffer*)
+                   with obeg = (alist-get 'beg state*)
+                   with oend = (alist-get 'end state*)
+                   for i below (length filtered-items)
+                   for pre = (nth i filtered-items)
+                   unless (xlsp-struct-completion-item-detail pre)
+                   do (jsonrpc-async-request
+                       conn xlsp-request-completion-item/resolve
+                       (xlsp-jsonify pre)
+                       :success-fn
+                       (apply-partially
+                        (cl-function
+                         (lambda (i* result-plist
+                                     &aux (post (xlsp-unjsonify 'xlsp-struct-completion-item result-plist)))
+                           (when-let
+                               ((active-p (with-current-buffer buffer*
+                                            company-point))
+                                (text (xlsp-new-text post))
+                                (stable-beg-p
+                                 (eq
+                                  obeg
+                                  (alist-get 'beg state*)))
+                                (stable-end-p
+                                 (eq
+                                  oend
+                                  (alist-get 'end state*))))
+                             (setf (nth i* (alist-get 'kinds state*))
+                                   (xlsp-struct-completion-item-kind post))
+                             (setf (nth i* (alist-get 'details state*))
+                                   (xlsp-struct-completion-item-detail post))
+                             (setf (nth i* (alist-get 'additionses state*))
+                                   (xlsp-struct-completion-item-additional-text-edits post))
+                             (with-current-buffer buffer*
+                               (company-update-candidates company-candidates)
+                               (company-call-frontends 'update)
+                               (company-call-frontends 'post-command)))))
+                        i)))))
+    (prog1 (funcall cb* nil)
+      (setq state* (make-xlsp-completion-state)))))
+
 (define-minor-mode xlsp-mode
   "Start and consult language server if applicable."
   :lighter nil
   :group 'xlsp
-  (require 'company)
-  (require 'company-capf)               ; for company--contains
-  (defvar company-prefix)
-  (defvar company-candidates-cache)
-  (defvar company-candidates)
-  (defvar company-backends)
-  (defvar company-minimum-prefix-length)
-  (defvar company-tooltip-idle-delay)
-  (defvar company-idle-delay)
-  (defvar company-mode)
-  (defvar global-company-mode)
-  (defvar company-candidates-length)
-  (defvar company-point)
-  (defvar company-lighter)
-  (defvar company-lighter-base)
-  (declare-function company-grab-symbol "company")
-  (declare-function company-in-string-or-comment "company")
-  (declare-function company-mode "company")
-  (declare-function company--contains "company-capf")
-  (declare-function company-call-frontends "company")
-  (declare-function company-update-candidates "company")
-  (let* ((empty-state `((beg . nil) (end . nil) (cache-p . nil)
-                        (kinds . nil) (details . nil)
-                        (trigger-char . nil) (additionses . nil)
-                        (index-of . ,(make-hash-table :test #'equal))))
-         (completion-state empty-state)
-         (completion-callback
-          (lambda (buffer* cb* completion-list)
-            "The interval [BEG, END) spans the region supplantable by
-CANDIDATES.  CACHE-P advises `company-calculate-completions'
-whether to cache CANDIDATES."
-            (if-let ((items
-                      (append
-                       (xlsp-struct-completion-list-items completion-list) nil))
-                     (beg-end (if-let ((has-text-edit
-                                        (seq-find #'xlsp-struct-completion-item-text-edit
-                                                  items))
-                                       (range (xlsp-struct-text-edit-range
-                                               (xlsp-struct-completion-item-text-edit
-                                                has-text-edit))))
-                                  ;; Good, server has specific range info.
-                                  (cons (xlsp-our-pos buffer* (xlsp-struct-range-start range))
-                                        (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
-                                ;; Bad, let's hope server agrees with us.
-                                (with-current-buffer buffer*
-                                  (or (bounds-of-thing-at-point 'symbol)
-                                      `(,(point) . ,(point))))))
-                     (beg (car beg-end))
-                     (end (cdr beg-end))
-                     (extant (with-current-buffer buffer*
-                               ;; server often out of sync by design
-                               (ignore-errors (buffer-substring-no-properties
-                                               beg end))))
-                     (filtered-items
-                      (sort
-                       (funcall
-                        (or xlsp-completion-filter-function
-                            (symbol-function 'xlsp-default-completion-filter))
-                        extant items)
-                       (lambda (i1 i2)
-                         (cond ((not (string-prefix-p extant (xlsp-new-text i1)))
-                                i2)
-                               ((not (string-prefix-p extant (xlsp-new-text i2)))
-                                i1)
-                               (t
-                                (let ((s1 (xlsp-struct-completion-item-sort-text i1))
-                                      (s2 (xlsp-struct-completion-item-sort-text i2)))
-                                  (if (and s1 s2)
-                                      (string< s1 s2)
-                                    (not s2))))))))
-                     (texts (mapcar #'xlsp-new-text filtered-items)))
-                (prog1 (funcall cb* texts)
-                  (setf (alist-get 'beg completion-state) beg
-                        (alist-get 'end completion-state) end
-                        (alist-get 'cache-p completion-state) (not (xlsp-struct-completion-list-is-incomplete completion-list))
-                        (alist-get 'kinds completion-state) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
-                        (alist-get 'details completion-state) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
-                        (alist-get 'additionses completion-state) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
-                  (clrhash (alist-get 'index-of completion-state))
-                  (dotimes (i (length texts))
-                    (puthash (nth i texts) i
-                             (alist-get 'index-of completion-state)))
-                  (when (xlsp-capability (xlsp-connection-get buffer*)
-                          xlsp-struct-server-capabilities-completion-provider
-                          xlsp-struct-completion-options-resolve-provider)
-                    ;; "By default the request can only delay the
-                    ;; computation of the detail and documentation
-                    ;; properties."
-                    (cl-loop with conn = (xlsp-connection-get buffer*)
-                             with obeg = (alist-get 'beg completion-state)
-                             with oend = (alist-get 'end completion-state)
-                             for i below (length filtered-items)
-                             for pre = (nth i filtered-items)
-                             unless (xlsp-struct-completion-item-detail pre)
-                             do (jsonrpc-async-request
-                                 conn xlsp-request-completion-item/resolve
-                                 (xlsp-jsonify pre)
-                                 :success-fn
-                                 (apply-partially
-                                  (cl-function
-                                   (lambda (i* result-plist
-                                            &aux (post (xlsp-unjsonify 'xlsp-struct-completion-item result-plist)))
-                                     (when-let
-                                         ((active-p (with-current-buffer buffer*
-                                                      company-point))
-                                          (text (xlsp-new-text post))
-                                          (stable-beg-p
-                                           (eq
-                                            obeg
-                                            (alist-get 'beg completion-state)))
-                                          (stable-end-p
-                                           (eq
-                                            oend
-                                            (alist-get 'end completion-state))))
-                                       (setf (nth i* (alist-get 'kinds completion-state))
-                                             (xlsp-struct-completion-item-kind post))
-                                       (setf (nth i* (alist-get 'details completion-state))
-                                             (xlsp-struct-completion-item-detail post))
-                                       (setf (nth i* (alist-get 'additionses completion-state))
-                                             (xlsp-struct-completion-item-additional-text-edits post))
-                                       (with-current-buffer buffer*
-                                         (company-update-candidates company-candidates)
-                                         (company-call-frontends 'update)
-                                         (company-call-frontends 'post-command)))))
-                                  i)))))
-              (prog1 (funcall cb* nil)
-                (setq completion-state empty-state)))))
+  (let* ((completion-state (make-xlsp-completion-state))
          (completion-directive
           (lambda (cb)
             (xlsp-do-request-completion
              (current-buffer) (point)
-             (apply-partially completion-callback (current-buffer) cb)
+             (apply-partially #'xlsp-completion-callback
+                              completion-state (current-buffer) cb)
              (alist-get 'trigger-char completion-state))))
          (xlsp-advise-cache
           (lambda (f &rest args)
@@ -986,8 +920,6 @@ whether to cache CANDIDATES."
             (dont-play company-tooltip-idle-delay)
             (dont-play company-idle-delay)
             (dont-play completion-styles))
-          (unless company-mode
-            (company-mode))
           (setq-local company-backends (cons backend company-backends)
                       company-lighter (concat " " company-lighter-base))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
@@ -1011,8 +943,6 @@ whether to cache CANDIDATES."
                                (buffer-name) (cl-second err)))))
       (xlsp-toggle-hooks nil)
       (xlsp-deregister-buffer (current-buffer))
-      (unless global-company-mode
-        (company-mode -1))
       (unless global-eldoc-mode
         (eldoc-mode -1))
       (mapc #'kill-local-variable '(company-backends
@@ -1273,7 +1203,11 @@ whether to cache CANDIDATES."
 (defalias 'xlsp-toggle-hooks
   (lambda (conn)
     "Truthiness of CONN is tantamount to on/off."
-    (let ((did-change-predicate
+    (let ((completion-predicate
+           (lambda (conn)
+             (xlsp-capability
+               conn xlsp-struct-server-capabilities-completion-provider)))
+          (did-change-predicate
            (lambda (conn)
              (xlsp-sync-p conn xlsp-struct-text-document-sync-options-change)))
           (did-save-predicate
@@ -1306,7 +1240,54 @@ whether to cache CANDIDATES."
           (eldoc-cache '(nil . nil)))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
-               `([post-self-insert-hook
+               `([completion-at-point-functions
+                  ,completion-predicate
+                  (lambda ()
+                    (apply-partially
+                     (lambda (buffer* state*)
+                       "Return (BEG END BLANDY-MONNIER . _PROPS)"
+                       (with-current-buffer buffer*
+                         (let* ((heuristic-prefix
+                                 (bounds-of-thing-at-point 'symbol))
+                                (for-point (point))
+                                (beg (or (car heuristic-prefix) for-point))
+                                (end (or (cdr heuristic-prefix) for-point)))
+                           (list
+                            beg
+                            end
+                            ;; BLANDY-MONNIER takes three arguments
+                            ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
+                            ;; PREFIX is buffer text between [BEG, END).
+                            ;; Other values for NIL-FOR-TRY-ELSE-T include
+                            ;; 'metadata, 'lambda, and '(boundaries ...),
+                            ;; which we disregard mostly out of spite for
+                            ;; its hamfisted api and for the felony of
+                            ;; minibuffer.el generally.
+                            (lambda (prefix pred nil-for-try)
+                              (with-current-buffer buffer*
+                                (when-let ((tick
+                                            (buffer-chars-modified-tick))
+                                           (retrieve-p
+                                            (or (not (eq (alist-get 'beg state*) beg))
+                                                (not (eq (alist-get 'tick state*) tick))))
+                                           (matches
+                                            (xlsp-do-request-completion
+                                             :sync t
+                                             buffer*
+                                             for-point
+                                             (apply-partially xlsp-completion-callback
+                                                              buffer* #'ignore)
+                                             nil)))
+                                  (setf (alist-get 'beg state*) beg
+                                        (alist-get 'tick state*) tick
+                                        (alist-get 'matches state*) matches)))
+                              (cl-case nil-for-try
+                                ((nil)
+                                 (try-completion prefix (alist-get 'matches state*)))
+                                ((t)
+                                 (all-completions "" (alist-get 'matches state*) pred))))))))
+                     (current-buffer) `((beg . ,(point-max)) (tick . -1) (matches . nil))))]
+                 [post-self-insert-hook
                   ,format-predicate
                   (lambda ()
                     (lambda ()
@@ -1367,7 +1348,7 @@ whether to cache CANDIDATES."
                          (hook (funcall closure)))
                 (add-hook hooks hook depth :local)
                 (push (cons hooks hook) xlsp-hooks-alist))
-            (when (symbolp closure)    ; one of the defaliases
+            (when (symbolp closure)     ; one of the defaliases
               (kill-local-variable closure)))))
       (if conn
           (unless eldoc-mode

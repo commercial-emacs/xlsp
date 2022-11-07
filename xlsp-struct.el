@@ -1,9 +1,5 @@
 ;;; xlsp-struct.el -*- lexical-binding: t; -*-
 
-;;; Commentary:
-
-;;; Code:
-
 (require 'json)
 (eval-and-compile
   (require 'xlsp-utils)
