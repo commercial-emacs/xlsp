@@ -47,6 +47,7 @@
   (when (< emacs-major-version 28)
     (defvar xlsp-synchronize-closure)
     (defvar xlsp-did-change-text-document)
+    (defvar xlsp-completion-at-point)
     (defvar xlsp-did-save-text-document)
     (defvar xlsp-did-open-text-document)
     (defvar xlsp-did-close-text-document)
@@ -1172,6 +1173,56 @@ whether to cache CANDIDATES."
        (signal (car err) (cdr err))))
     conn))
 
+(defalias 'xlsp-completion-at-point
+  (lambda ()
+    (xlsp-get-closure
+      xlsp-completion-at-point
+      (apply-partially
+       (lambda (state*)
+         "Return (BEG END BLANDY-MONNIER . _PROPS)"
+         (let* ((heuristic-prefix
+                 (bounds-of-thing-at-point 'symbol))
+                (for-buffer (current-buffer))
+                (for-point (point))
+                (beg (or (car heuristic-prefix) for-point))
+                (end (or (cdr heuristic-prefix) for-point))
+                (blandy-monnier
+                 ;; BLANDY-MONNIER takes three arguments
+                 ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
+                 ;; PREFIX is buffer text between [BEG, END).
+                 ;; Other values for NIL-FOR-TRY-ELSE-T include
+                 ;; 'metadata, 'lambda, and '(boundaries ...),
+                 ;; which we disregard mostly out of spite for
+                 ;; its hamfisted api and for the felony of
+                 ;; minibuffer.el generally.
+                 (lambda (prefix pred nil-for-try)
+                   (with-current-buffer for-buffer
+                     (when-let ((completions-state
+                                 (make-xlsp-completion-state))
+                                (tick
+                                 (buffer-chars-modified-tick))
+                                (retrieve-p
+                                 (or (not (eq (alist-get 'beg state*) beg))
+                                     (not (eq (alist-get 'tick state*) tick))))
+                                (matches
+                                 (xlsp-do-request-completion
+                                  for-buffer
+                                  for-point
+                                  (apply-partially #'xlsp-completion-callback
+                                                   completions-state for-buffer
+                                                   #'identity)
+                                  :sync t)))
+                       (setf (alist-get 'beg state*) beg
+                             (alist-get 'tick state*) tick
+                             (alist-get 'matches state*) matches))
+                     (cl-case nil-for-try
+                       ((nil)
+                        (try-completion prefix (alist-get 'matches state*)))
+                       ((t)
+                        (all-completions "" (alist-get 'matches state*) pred)))))))
+           (list beg end blandy-monnier)))
+       '((beg . 0) (tick . -1) (matches . nil))))))
+
 (defalias 'xlsp-did-change-text-document
   (lambda ()
     (xlsp-get-closure
@@ -1318,53 +1369,9 @@ whether to cache CANDIDATES."
           (eldoc-cache '(nil . nil)))
       (dolist (entry
                ;; [HOOKS PREDICATE CLOSURE &optional DEPTH]
-               `([completion-at-point-functions
-                  ,completion-predicate
-                  (lambda ()
-                    (apply-partially
-                     (lambda (buffer* state*)
-                       "Return (BEG END BLANDY-MONNIER . _PROPS)"
-                       (with-current-buffer buffer*
-                         (let* ((heuristic-prefix
-                                 (bounds-of-thing-at-point 'symbol))
-                                (for-point (point))
-                                (beg (or (car heuristic-prefix) for-point))
-                                (end (or (cdr heuristic-prefix) for-point)))
-                           (list
-                            beg
-                            end
-                            ;; BLANDY-MONNIER takes three arguments
-                            ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
-                            ;; PREFIX is buffer text between [BEG, END).
-                            ;; Other values for NIL-FOR-TRY-ELSE-T include
-                            ;; 'metadata, 'lambda, and '(boundaries ...),
-                            ;; which we disregard mostly out of spite for
-                            ;; its hamfisted api and for the felony of
-                            ;; minibuffer.el generally.
-                            (lambda (prefix pred nil-for-try)
-                              (with-current-buffer buffer*
-                                (when-let ((tick
-                                            (buffer-chars-modified-tick))
-                                           (retrieve-p
-                                            (or (not (eq (alist-get 'beg state*) beg))
-                                                (not (eq (alist-get 'tick state*) tick))))
-                                           (matches
-                                            (xlsp-do-request-completion
-                                             buffer*
-                                             for-point
-                                             (apply-partially xlsp-completion-callback
-                                                              buffer* #'ignore)
-                                             :sync t)))
-                                  (setf (alist-get 'beg state*) beg
-                                        (alist-get 'tick state*) tick
-                                        (alist-get 'matches state*) matches)))
-                              (cl-case nil-for-try
-                                ((nil)
-                                 (try-completion prefix (alist-get 'matches state*)))
-                                ((t)
-                                 (all-completions "" (alist-get 'matches state*) pred))))))))
-                     (current-buffer) `((beg . ,(point-max)) (tick . -1) (matches . nil))))]
-                 [post-self-insert-hook
+               ;; N.B. You don't have lex binding when defining
+               ;; lambda expressions in the backquote.
+               `([post-self-insert-hook
                   ,format-predicate
                   (lambda ()
                     (lambda ()
@@ -1380,6 +1387,9 @@ whether to cache CANDIDATES."
                                           (xlsp-connection-get (current-buffer)))))
                           (xlsp-do-request-on-type-formatting
                            (current-buffer) (point) event)))))]
+                 [completion-at-point-functions
+                  ,completion-predicate
+                  xlsp-completion-at-point]
                  [before-change-functions
                   ,did-change-predicate
                   xlsp-did-change-text-document]
