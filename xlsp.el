@@ -10,8 +10,8 @@
 
 ;; Overview
 ;; --------
-;; M-x xlsp-mode        toggles for the current buffer.
-;; M-x global-xlsp-mode toggles globally.
+;; M-x xlsp-mode        toggles for the current buffer
+;; M-x global-xlsp-mode toggles globally
 ;; C-M-i                completion (repeatable)
 ;; M-.                  jump to definition
 ;; M-,                  jump back from definition
