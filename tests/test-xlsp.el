@@ -12,7 +12,9 @@
 (cl-defmacro test-xlsp-mock-repo ((&rest files) &body body)
   (declare (indent 1))
   `(let* ((dir (make-temp-file "test-xlsp" t))
-          (default-directory dir))
+          (default-directory dir)
+          (xlsp-completion-menus-p t)
+          (xlsp-hover-help-p t))
      (unwind-protect
          (progn
            (vc-git-create-repo)

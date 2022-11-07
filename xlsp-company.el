@@ -2,6 +2,8 @@
 
 (require 'xlsp-utils)
 (require 'xlsp-struct)
+(require 'company)
+(require 'company-capf)               ; for company--contains
 
 (defconst xlsp-company-kind-alist
   (seq-map
