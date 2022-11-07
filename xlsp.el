@@ -237,7 +237,7 @@ I use inode in case project directory gets renamed.")
 (defun xlsp--initialization-options (project-dir)
   (ignore project-dir))
 
-(cl-defstruct xlsp-struct-synchronize
+(cl-defstruct xlsp-synchronize-state
   "Keep shit together."
   (buffer nil :type buffer)
   (version 0 :type integer)
@@ -249,6 +249,7 @@ I use inode in case project directory gets renamed.")
   (beg nil :type integer)
   (end nil :type integer)
   (cache-p nil :type boolean)
+  (cached-texts nil :type list)
   (kinds nil :type list)
   (details nil :type list)
   (trigger-char nil :type character)
@@ -265,11 +266,11 @@ I use inode in case project directory gets renamed.")
           "SYNCHRONIZE* is naturally thread unsafe state."
           (when cumulate
             (push cumulate
-                  (xlsp-struct-synchronize-events synchronize*))
-            (cl-incf (xlsp-struct-synchronize-version synchronize*))
-            (when (and (not (xlsp-struct-synchronize-timer synchronize*))
+                  (xlsp-synchronize-state-events synchronize*))
+            (cl-incf (xlsp-synchronize-state-version synchronize*))
+            (when (and (not (xlsp-synchronize-state-timer synchronize*))
                        (not send))
-              (setf (xlsp-struct-synchronize-timer synchronize*)
+              (setf (xlsp-synchronize-state-timer synchronize*)
                     (run-with-idle-timer
                      0.8 nil
                      (apply-partially
@@ -277,13 +278,13 @@ I use inode in case project directory gets renamed.")
                         "Assume no context switch to :cumulate during :send."
                         (with-current-buffer buffer*
                           (funcall xlsp-synchronize-closure :send t)
-                          (setf (xlsp-struct-synchronize-timer synchronize*) nil)))
-                      (xlsp-struct-synchronize-buffer synchronize*))))))
+                          (setf (xlsp-synchronize-state-timer synchronize*) nil)))
+                      (xlsp-synchronize-state-buffer synchronize*))))))
           (when send
-            (when (xlsp-struct-synchronize-timer synchronize*)
-              (cancel-timer (xlsp-struct-synchronize-timer synchronize*)))
+            (when (xlsp-synchronize-state-timer synchronize*)
+              (cancel-timer (xlsp-synchronize-state-timer synchronize*)))
             (let* ((conn (xlsp-connection-get
-                          (xlsp-struct-synchronize-buffer synchronize*)))
+                          (xlsp-synchronize-state-buffer synchronize*)))
                    (kind (xlsp-sync-kind conn xlsp-struct-text-document-sync-options-change))
                    (changes
                     (cond ((eq kind xlsp-text-document-sync-kind/none) nil)
@@ -291,10 +292,10 @@ I use inode in case project directory gets renamed.")
                            (apply #'vector
                                   (nreverse
                                    (copy-sequence
-                                    (xlsp-struct-synchronize-events synchronize*)))))
+                                    (xlsp-synchronize-state-events synchronize*)))))
                           (t (let ((full-text
                                     (with-current-buffer
-                                        (xlsp-struct-synchronize-buffer synchronize*)
+                                        (xlsp-synchronize-state-buffer synchronize*)
                                       (save-restriction
                                         (widen)
                                         (buffer-substring-no-properties
@@ -310,15 +311,15 @@ I use inode in case project directory gets renamed.")
                    (make-xlsp-struct-versioned-text-document-identifier
                     :uri (xlsp-urify
                           (buffer-file-name
-                           (xlsp-struct-synchronize-buffer synchronize*)))
-                    :version (xlsp-struct-synchronize-version synchronize*))
+                           (xlsp-synchronize-state-buffer synchronize*)))
+                    :version (xlsp-synchronize-state-version synchronize*))
                    :content-changes
                    (prog1 changes
                      ;; Events sent; clear for next batch.
-                     (setf (xlsp-struct-synchronize-events synchronize*) nil))))))))
+                     (setf (xlsp-synchronize-state-events synchronize*) nil))))))))
           (when save
             (jsonrpc-notify
-             (xlsp-connection-get (xlsp-struct-synchronize-buffer synchronize*))
+             (xlsp-connection-get (xlsp-synchronize-state-buffer synchronize*))
              xlsp-notification-text-document/did-save
              (xlsp-jsonify
               (make-xlsp-struct-did-save-text-document-params
@@ -326,11 +327,11 @@ I use inode in case project directory gets renamed.")
                (make-xlsp-struct-versioned-text-document-identifier
                 :uri (xlsp-urify
                       (buffer-file-name
-                       (xlsp-struct-synchronize-buffer synchronize*)))
-                :version (xlsp-struct-synchronize-version synchronize*))))))
+                       (xlsp-synchronize-state-buffer synchronize*)))
+                :version (xlsp-synchronize-state-version synchronize*))))))
           (when version
-            (xlsp-struct-synchronize-version synchronize*))))
-       (make-xlsp-struct-synchronize :buffer (current-buffer))))))
+            (xlsp-synchronize-state-version synchronize*))))
+       (make-xlsp-synchronize-state :buffer (current-buffer))))))
 
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
@@ -790,11 +791,9 @@ Hooks must be tracked since closures ruin remove-hook's #'equal criterion.")
 
 (defun xlsp-completion-callback (state* buffer* cb* completion-list)
   "The interval [BEG, END) spans the region supplantable by
-CANDIDATES.  CACHE-P advises `company-calculate-completions'
-whether to cache CANDIDATES."
+CANDIDATES."
   (if-let ((items
-            (append
-             (xlsp-struct-completion-list-items completion-list) nil))
+            (append (xlsp-struct-completion-list-items completion-list) nil))
            (beg-end (if-let ((has-text-edit
                               (seq-find #'xlsp-struct-completion-item-text-edit
                                         items))
@@ -836,6 +835,7 @@ whether to cache CANDIDATES."
         (setf (xlsp-completion-state-beg state*) beg
               (xlsp-completion-state-end state*) end
               (xlsp-completion-state-cache-p state*) (not (xlsp-struct-completion-list-is-incomplete completion-list))
+              (xlsp-completion-state-cached-texts state*) (when (xlsp-completion-state-cache-p state*) texts)
               (xlsp-completion-state-kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
               (xlsp-completion-state-details state*) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
               (xlsp-completion-state-additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
@@ -896,12 +896,25 @@ whether to cache CANDIDATES."
   (let* ((completion-state (make-xlsp-completion-state))
          (completion-directive
           (lambda (cb)
-            (xlsp-do-request-completion
-             (current-buffer) (point)
-             (apply-partially #'xlsp-completion-callback
-                              completion-state (current-buffer) cb)
-             :trigger-char (xlsp-completion-state-trigger-char completion-state))))
+            (let ((beg (xlsp-completion-state-beg completion-state))
+                  (cached-texts (xlsp-completion-state-cached-texts
+                                 completion-state)))
+              ;; Can't know what the textedits say until I ask.  To
+              ;; retrench jsonrpc traffic, apply alphanum heuristic.
+              (if (and beg
+                       cached-texts
+                       (>= (point) beg)
+                       (string-match-p "^[0-9a-z_]+$"
+                                       (buffer-substring beg (point))))
+                  (funcall cb cached-texts)
+                (xlsp-do-request-completion
+                 (current-buffer) (point)
+                 (apply-partially #'xlsp-completion-callback
+                                  completion-state (current-buffer) cb)
+                 :trigger-char (xlsp-completion-state-trigger-char completion-state))))))
          (xlsp-advise-cache
+          ;; xlsp has its own cached-texts in completion-state.
+          ;; This advice deals with company's cache.
           (lambda (f &rest args)
             "LSP said isIncomplete.  So undo the caching."
             (let ((restore-cache company-candidates-cache))
@@ -1189,50 +1202,60 @@ whether to cache CANDIDATES."
     (xlsp-get-closure
       xlsp-completion-at-point
       (apply-partially
-       (lambda (state*)
-         "Return (BEG END BLANDY-MONNIER . _PROPS)"
-         (let* ((heuristic-prefix
-                 (bounds-of-thing-at-point 'symbol))
-                (for-buffer (current-buffer))
-                (for-point (point))
-                (beg (or (car heuristic-prefix) for-point))
-                (end (or (cdr heuristic-prefix) for-point))
-                (blandy-monnier
-                 ;; BLANDY-MONNIER takes three arguments
-                 ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
-                 ;; PREFIX is buffer text between [BEG, END).
-                 ;; Other values for NIL-FOR-TRY-ELSE-T include
-                 ;; 'metadata, 'lambda, and '(boundaries ...),
-                 ;; which we disregard mostly out of spite for
-                 ;; its hamfisted api and for the felony of
-                 ;; minibuffer.el generally.
-                 (lambda (prefix pred nil-for-try)
-                   (with-current-buffer for-buffer
-                     (when-let ((completions-state
-                                 (make-xlsp-completion-state))
-                                (tick
-                                 (buffer-chars-modified-tick))
-                                (retrieve-p
-                                 (or (not (eq (alist-get 'beg state*) beg))
-                                     (not (eq (alist-get 'tick state*) tick))))
-                                (matches
-                                 (xlsp-do-request-completion
-                                  for-buffer
-                                  for-point
-                                  (apply-partially #'xlsp-completion-callback
-                                                   completions-state for-buffer
-                                                   #'identity)
-                                  :sync t)))
-                       (setf (alist-get 'beg state*) beg
-                             (alist-get 'tick state*) tick
-                             (alist-get 'matches state*) matches))
-                     (cl-case nil-for-try
-                       ((nil)
-                        (try-completion prefix (alist-get 'matches state*)))
-                       ((t)
-                        (all-completions "" (alist-get 'matches state*) pred)))))))
-           (list beg end blandy-monnier)))
-       '((beg . 0) (tick . -1) (matches . nil))))))
+       (cl-function
+        (lambda (state*
+                 &aux (prefix* (car state*)) (matches* (cdr state*)))
+          "Return (BEG END BLANDY-MONNIER . _PROPS)"
+          (let* ((heuristic-prefix
+                  (bounds-of-thing-at-point 'symbol))
+                 (for-buffer (current-buffer))
+                 (for-point (point))
+                 (beg (or (car heuristic-prefix) for-point))
+                 (end (or (cdr heuristic-prefix) for-point))
+                 (blandy-monnier
+                  ;; BLANDY-MONNIER takes three arguments
+                  ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
+                  ;; PREFIX is buffer text between [BEG, END).
+                  ;; Other values for NIL-FOR-TRY-ELSE-T include
+                  ;; 'metadata, 'lambda, and '(boundaries ...),
+                  ;; which we disregard mostly out of spite for
+                  ;; its hamfisted api and for the felony of
+                  ;; minibuffer.el generally.
+                  (lambda (prefix pred nil-for-try)
+                    (with-current-buffer for-buffer
+                      (when-let ((completion-state
+                                  (make-xlsp-completion-state))
+                                 ;; MATCHES* should remain a good
+                                 ;; superset of matches if PREFIX
+                                 ;; merely extends PREFIX*, that is, my
+                                 ;; prevailing matches for PREFIX*
+                                 ;; "cat" should have included matches
+                                 ;; for PREFIX "cattle".  Otherwise
+                                 ;; re-query.
+                                 (requery-p (not (string-prefix-p
+                                                  prefix* prefix)))
+                                 (matches
+                                  (xlsp-do-request-completion
+                                   for-buffer
+                                   for-point
+                                   (apply-partially #'xlsp-completion-callback
+                                                    completion-state for-buffer
+                                                    #'identity)
+                                   :sync t)))
+                        (setcar state* prefix)
+                        (setcdr state* matches)
+                        (setf prefix* (car state*)
+                              matches* (cdr state*)))
+                      (let ((pruned (cl-remove-if-not
+                                     (apply-partially #'string-prefix-p prefix)
+                                     matches*)))
+                        (cl-case nil-for-try
+                          ((nil)
+                           (try-completion prefix* pruned))
+                          ((t)
+                           (all-completions "" pruned pred))))))))
+            (list beg end blandy-monnier))))
+       (cons "" nil)))))
 
 (defalias 'xlsp-did-change-text-document
   (lambda ()

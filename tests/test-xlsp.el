@@ -113,6 +113,13 @@ his fooness")
 #include <stdio.h>
 #include \"foo.h\"
 
+static int abcde;
+static int abcdef;
+static int abcdefg;
+static int abcdefgh;
+static int abcdefghi;
+static int abcdefghij;
+
 void main (void) {
   return 0;
 }
@@ -134,6 +141,7 @@ void main (void) {
           (with-current-buffer (find-file "foo.c")
             (should xlsp-mode))))))
     (set-buffer "foo.c")
+
     (eval
      (quote
       (test-xlsp-should
@@ -146,6 +154,7 @@ void main (void) {
         (setq this-command nil
               last-command (aref eldoc-message-commands 0))
         (ert-run-idle-timers))))
+
     (should-error ; eldoc-cache forestalls another hover request
      (eval
       (quote
@@ -156,6 +165,7 @@ void main (void) {
          (ert-simulate-command '(backward-char))
          (ert-simulate-command '(forward-char))
          (ert-run-idle-timers)))))
+
     (eval
      (quote
       (test-xlsp-should
@@ -171,7 +181,6 @@ void main (void) {
     (defvar company-candidates)
     (should company-candidates)
     (ert-simulate-command '(company-complete))
-
     ;; test onTypeFormatting...
     (goto-char (line-beginning-position))
     (should (looking-at (regexp-quote "f")))
@@ -179,10 +188,73 @@ void main (void) {
       (end-of-line)
       (dolist (char (seq-map #'identity "(stderr, \"foo\");"))
         (ert-simulate-command `(self-insert-command 1 ,char)))
-      (setq last-input-event ?\n)
-      (ert-simulate-command '(self-insert-command 1 ?\n)))
+      (let ((last-input-event ?\n))
+        (ert-simulate-command '(self-insert-command 1 ?\n))))
     (should (looking-at (regexp-quote "  ")))
+    (forward-line 1)
 
+    (eval
+     (quote
+      (test-xlsp-should
+       ((comp0 :what "client-request"
+               :method xlsp-request-text-document/completion)
+        (comp1 :what "server-reply" :ref comp0))
+       (should company-mode)
+       (dolist (char (seq-map #'identity "(void) abcde"))
+         (ert-simulate-command `(self-insert-command 1 ,char)))
+       (should company-timer)
+       (ert-run-idle-timers))))
+    (should (= (length company-candidates) 6))
+
+    (should-error ; completion caching forestalls another request
+     (eval
+      (quote
+       (test-xlsp-should
+        ((comp0 :what "client-request"
+                :method xlsp-request-text-document/completion))
+        :timeout 1
+        (ert-simulate-command '(self-insert-command 1 ?f))
+        (should company-timer)
+        (ert-run-idle-timers)))))
+
+    (should-error ; completion caching forestalls another request
+     (eval
+      (quote
+       (test-xlsp-should
+        ((comp0 :what "client-request"
+                :method xlsp-request-text-document/completion))
+        :timeout 1
+        (ert-simulate-command '(self-insert-command 1 ?g))
+        (should company-timer)
+        (ert-run-idle-timers)))))
+
+    (eval
+     (quote
+      (test-xlsp-should
+       ((comp0 :what "client-request"
+               :method xlsp-request-text-document/completion)
+        (comp1 :what "server-reply" :ref comp0))
+       (ert-simulate-command '(self-insert-command 1 ?h))
+       (call-interactively #'completion-at-point))))
+    (with-current-buffer "*Completions*"
+      (save-excursion (should-error (re-search-forward "abcdefg$")))
+      (should (re-search-forward "abcdefgh$")))
+
+    (should-error ; completion caching forestalls another request
+     (eval
+      (quote
+       (test-xlsp-should
+        ((comp0 :what "client-request"
+                :method xlsp-request-text-document/completion))
+        :timeout 1
+        (ert-simulate-command '(self-insert-command 1 ?i))
+        (call-interactively #'completion-at-point)))))
+    (with-current-buffer "*Completions*"
+      (save-excursion (should-error (re-search-forward "abcdefgh$")))
+      (should (re-search-forward "abcdefghi$")))
+
+    (let ((last-input-event ?\n))
+      (ert-simulate-command '(self-insert-command 1 ?\n)))
     (should (save-excursion (re-search-backward (regexp-quote "foo.h"))))
     (eval
      (quote
@@ -204,6 +276,7 @@ void main (void) {
                       :method xlsp-notification-text-document/did-open))
         (xlsp-mode -1)
         (xlsp-mode))))
+
     (let ((proc-name (xlsp-conn-string 'c-mode (project-root (project-current)))))
       (if (fboundp 'project-kill-buffers)
           ;; cannot check for orderly shutdown-exit because

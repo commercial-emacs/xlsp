@@ -78,7 +78,7 @@ Avoid seeing the metadata/category/overrides/styles fiasco in minibuffer.el."
                               (xlsp-do-request-workspace-symbols buffer* prefix))))
             (setcar state* prefix)
             (setcdr state* matches)
-            (setq prefix* (car state*)
+            (setf prefix* (car state*)
                   matches* (cdr state*))))
 
         ;; Note LSP keys off symbols at their precise file locations.
