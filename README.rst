@@ -13,12 +13,12 @@ Usage
 
    Overview
    --------
-   M-x xlsp-mode        toggles for the current buffer.
-   M-x global-xlsp-mode toggles globally.
-   C-M-i                completion (repeatable)
+   M-x xlsp-mode        toggles for the current buffer
+   M-x global-xlsp-mode toggles globally
+   C-M-i                completion (disambiguate then TAB to complete)
    M-.                  jump to definition
    M-,                  jump back from definition
-   C-u M-.              prompt jump to definition (TAB for completion)
+   C-u M-.              prompt jump to definition (TAB to complete)
    
    .emacs or init.el configuration
    -------------------------------

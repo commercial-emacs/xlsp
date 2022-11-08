@@ -38,22 +38,29 @@ Failing that we want the one before, or failing that, after."
       (mapcar
        (lambda (location)
          (when-let ((file (xlsp-unurify (funcall uri-getter location)))
-                    (readable-p (file-readable-p file))
-                    (range (funcall range-getter location)))
-           (with-temp-buffer
-             ;; a tad fatuous since `find-file' likely to ensue.
-             (insert-file-contents-literally file)
-             (let ((beg (xlsp-our-pos
-                         (current-buffer)
-                         (xlsp-struct-range-start range)))
-                   (end (xlsp-our-pos
-                         (current-buffer)
-                         (xlsp-struct-range-end range))))
-               (goto-char beg)
-               (xref-make-match
-                identifier
-                (xref-make-file-location file (line-number-at-pos) (current-column))
-                (- end beg))))))
+                    (range (funcall range-getter location))
+                    (make-match
+                     (lambda (buffer)
+                       (with-current-buffer buffer
+                         (let ((beg (xlsp-our-pos
+                                     (current-buffer)
+                                     (xlsp-struct-range-start range)))
+                               (end (xlsp-our-pos
+                                     (current-buffer)
+                                     (xlsp-struct-range-end range))))
+                           (goto-char beg)
+                           (xref-make-match
+                            identifier
+                            (xref-make-file-location file (line-number-at-pos) (current-column))
+                            (- end beg)))))))
+           (if-let ((buffer (find-buffer-visiting file)))
+               ;; Else case won't have unsaved changes to FILE
+               (funcall make-match buffer)
+             (when (file-readable-p file)
+               (with-temp-buffer
+                 ;; a tad fatuous since `find-file' likely to ensue.
+                 (insert-file-contents-literally file)
+                 (funcall make-match (current-buffer)))))))
        locations))))
 
 (cl-defmethod xref-backend-identifier-completion-table ((_backend (eql 'xlsp)))

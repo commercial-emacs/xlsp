@@ -12,10 +12,10 @@
 ;; --------
 ;; M-x xlsp-mode        toggles for the current buffer
 ;; M-x global-xlsp-mode toggles globally
-;; C-M-i                completion (repeatable)
+;; C-M-i                completion (disambiguate then TAB to complete)
 ;; M-.                  jump to definition
 ;; M-,                  jump back from definition
-;; C-u M-.              prompt jump to definition (TAB for completion)
+;; C-u M-.              prompt jump to definition (TAB to complete)
 ;;
 ;; .emacs or init.el configuration
 ;; -------------------------------
@@ -1668,7 +1668,7 @@ The problem is that goes from glob to files, and I need converse."
                 conn xlsp-struct-server-capabilities-document-range-formatting-provider)))
     (xlsp-do-request-range-formatting (current-buffer) beg end)))
 
-(put 'xlsp-workspace-configuration 'safe-local-variable 'listp) ; see Commentary
+(put 'xlsp-workspace-configuration 'safe-local-variable 'listp)
 
 ;;;###autoload
 (define-globalized-minor-mode global-xlsp-mode
