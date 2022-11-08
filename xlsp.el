@@ -247,7 +247,7 @@ I use inode in case project directory gets renamed.")
 (cl-defstruct xlsp-completion-state
   "Frameworks generally give structure.  Company-mode does not."
   (beg nil :type integer)
-  (end nil :type integer)
+  (prefix nil :type string)
   (cache-p nil :type boolean)
   (cached-texts nil :type list)
   (kinds nil :type list)
@@ -767,11 +767,6 @@ naming is fairly egregious."
         (inhibit-message t)) ; but echo area still gets cleared... bad.
     (apply #'message (concat lhs format) args)))
 
-(defmacro xlsp-tack (lst tack)
-  `(if (consp ,lst)
-       (setcdr (last ,lst) (list ,tack))
-     (setf ,lst (list ,tack))))
-
 (defun xlsp-do-request-workspace-symbols (buffer query)
   (when-let ((conn (xlsp-connection-get buffer))
              (params (make-xlsp-struct-workspace-symbol-params
@@ -833,7 +828,7 @@ CANDIDATES."
            (texts (mapcar #'xlsp-new-text filtered-items)))
       (prog1 (funcall cb* texts)
         (setf (xlsp-completion-state-beg state*) beg
-              (xlsp-completion-state-end state*) end
+              (xlsp-completion-state-prefix state*) extant
               (xlsp-completion-state-cache-p state*) (not (xlsp-struct-completion-list-is-incomplete completion-list))
               (xlsp-completion-state-cached-texts state*) (when (xlsp-completion-state-cache-p state*) texts)
               (xlsp-completion-state-kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
@@ -851,7 +846,7 @@ CANDIDATES."
           ;; properties."
           (cl-loop with conn = (xlsp-connection-get buffer*)
                    with obeg = (xlsp-completion-state-beg state*)
-                   with oend = (xlsp-completion-state-end state*)
+                   with oprefix = (xlsp-completion-state-prefix state*)
                    for i below (length filtered-items)
                    for pre = (nth i filtered-items)
                    unless (xlsp-struct-completion-item-detail pre)
@@ -871,10 +866,10 @@ CANDIDATES."
                                  (eq
                                   obeg
                                   (xlsp-completion-state-beg state*)))
-                                (stable-end-p
-                                 (eq
-                                  oend
-                                  (xlsp-completion-state-end state*))))
+                                (stable-prefix-p
+                                 (equal
+                                  oprefix
+                                  (xlsp-completion-state-prefix state*))))
                              (setf (nth i* (xlsp-completion-state-kinds state*))
                                    (xlsp-struct-completion-item-kind post))
                              (setf (nth i* (xlsp-completion-state-details state*))
@@ -889,6 +884,16 @@ CANDIDATES."
     (prog1 (funcall cb* nil)
       (setf state* (make-xlsp-completion-state)))))
 
+(defun xlsp-heuristic-reuse-matches-p (buffer state)
+  (with-current-buffer buffer
+    (when-let ((beg (xlsp-completion-state-beg state))
+               (orig-prefix (xlsp-completion-state-prefix state))
+               (matches (xlsp-completion-state-cached-texts state))
+               (forward-p (>= (point) (+ beg (length orig-prefix))))
+               (prefix (buffer-substring beg (point))))
+      (and (string-prefix-p orig-prefix prefix)
+           (string-match-p "^[0-9a-z_]+$" prefix)))))
+
 (define-minor-mode xlsp-mode
   "Start and consult language server if applicable."
   :lighter nil
@@ -896,17 +901,11 @@ CANDIDATES."
   (let* ((completion-state (make-xlsp-completion-state))
          (completion-directive
           (lambda (cb)
-            (let ((beg (xlsp-completion-state-beg completion-state))
-                  (cached-texts (xlsp-completion-state-cached-texts
-                                 completion-state)))
+            (let ((matches (xlsp-completion-state-cached-texts completion-state)))
               ;; Can't know what the textedits say until I ask.  To
               ;; retrench jsonrpc traffic, apply alphanum heuristic.
-              (if (and beg
-                       cached-texts
-                       (>= (point) beg)
-                       (string-match-p "^[0-9a-z_]+$"
-                                       (buffer-substring beg (point))))
-                  (funcall cb cached-texts)
+              (if (xlsp-heuristic-reuse-matches-p (current-buffer) completion-state)
+                  (funcall cb matches)
                 (xlsp-do-request-completion
                  (current-buffer) (point)
                  (apply-partially #'xlsp-completion-callback
@@ -928,7 +927,8 @@ CANDIDATES."
             (when xlsp-mode
               (cl-destructuring-bind (beg . end)
                   (cons (xlsp-completion-state-beg completion-state)
-                        (xlsp-completion-state-end completion-state))
+                        (+ (xlsp-completion-state-beg completion-state)
+                           (length (xlsp-completion-state-prefix completion-state))))
                 (when beg
                   ;; `company--insert-candidate' requires point, not END.
                   (setq company-prefix (buffer-substring-no-properties beg (point))))))))
@@ -1202,60 +1202,45 @@ CANDIDATES."
     (xlsp-get-closure
       xlsp-completion-at-point
       (apply-partially
-       (cl-function
-        (lambda (state*
-                 &aux (prefix* (car state*)) (matches* (cdr state*)))
-          "Return (BEG END BLANDY-MONNIER . _PROPS)"
-          (let* ((heuristic-prefix
-                  (bounds-of-thing-at-point 'symbol))
-                 (for-buffer (current-buffer))
-                 (for-point (point))
-                 (beg (or (car heuristic-prefix) for-point))
-                 (end (or (cdr heuristic-prefix) for-point))
-                 (blandy-monnier
-                  ;; BLANDY-MONNIER takes three arguments
-                  ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
-                  ;; PREFIX is buffer text between [BEG, END).
-                  ;; Other values for NIL-FOR-TRY-ELSE-T include
-                  ;; 'metadata, 'lambda, and '(boundaries ...),
-                  ;; which we disregard mostly out of spite for
-                  ;; its hamfisted api and for the felony of
-                  ;; minibuffer.el generally.
-                  (lambda (prefix pred nil-for-try)
-                    (with-current-buffer for-buffer
-                      (when-let ((completion-state
-                                  (make-xlsp-completion-state))
-                                 ;; MATCHES* should remain a good
-                                 ;; superset of matches if PREFIX
-                                 ;; merely extends PREFIX*, that is, my
-                                 ;; prevailing matches for PREFIX*
-                                 ;; "cat" should have included matches
-                                 ;; for PREFIX "cattle".  Otherwise
-                                 ;; re-query.
-                                 (requery-p (not (string-prefix-p
-                                                  prefix* prefix)))
-                                 (matches
-                                  (xlsp-do-request-completion
-                                   for-buffer
-                                   for-point
-                                   (apply-partially #'xlsp-completion-callback
-                                                    completion-state for-buffer
-                                                    #'identity)
-                                   :sync t)))
-                        (setcar state* prefix)
-                        (setcdr state* matches)
-                        (setf prefix* (car state*)
-                              matches* (cdr state*)))
-                      (let ((pruned (cl-remove-if-not
+       (lambda (state*)
+         "Return (BEG END BLANDY-MONNIER . _PROPS)"
+         (let* ((heuristic-prefix
+                 (bounds-of-thing-at-point 'symbol))
+                (for-buffer (current-buffer))
+                (for-point (point))
+                (beg (or (car heuristic-prefix) for-point))
+                (end (or (cdr heuristic-prefix) for-point))
+                (blandy-monnier
+                 ;; BLANDY-MONNIER takes three arguments
+                 ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
+                 ;; PREFIX is buffer text between [BEG, END).
+                 ;; Other values for NIL-FOR-TRY-ELSE-T include
+                 ;; 'metadata, 'lambda, and '(boundaries ...),
+                 ;; which we disregard mostly out of spite for
+                 ;; its hamfisted api and for the felony of
+                 ;; minibuffer.el generally.
+                 (lambda (prefix pred nil-for-try)
+                   (with-current-buffer for-buffer
+                     (let* ((matches
+                             (if (xlsp-heuristic-reuse-matches-p for-buffer state*)
+                                 (xlsp-completion-state-cached-texts state*)
+                               (xlsp-do-request-completion
+                                for-buffer
+                                for-point
+                                (apply-partially #'xlsp-completion-callback
+                                                 state* for-buffer
+                                                 #'identity)
+                                :sync t)))
+                            (pruned (cl-remove-if-not
                                      (apply-partially #'string-prefix-p prefix)
-                                     matches*)))
-                        (cl-case nil-for-try
-                          ((nil)
-                           (try-completion prefix* pruned))
-                          ((t)
-                           (all-completions "" pruned pred))))))))
-            (list beg end blandy-monnier))))
-       (cons "" nil)))))
+                                     matches)))
+                       (cl-case nil-for-try
+                         ((nil)
+                          (try-completion prefix pruned))
+                         ((t)
+                          (all-completions "" pruned pred))))))))
+           (list beg end blandy-monnier)))
+       (make-xlsp-completion-state)))))
 
 (defalias 'xlsp-did-change-text-document
   (lambda ()

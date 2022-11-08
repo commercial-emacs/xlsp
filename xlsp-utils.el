@@ -142,6 +142,11 @@ PositionEncodingKind currently disregarded."
             (+ (line-beginning-position)
                (length (decode-coding-string upto-char 'utf-16)))))))))
 
+(defmacro xlsp-tack (lst tack)
+  `(if (consp ,lst)
+       (setcdr (last ,lst) (list ,tack))
+     (setf ,lst (list ,tack))))
+
 (provide 'xlsp-utils)
 
 ;;; xlsp-utils.el ends here
