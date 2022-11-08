@@ -925,13 +925,9 @@ CANDIDATES."
           (lambda (&rest _args)
             "Don't tell LSP what the prefix is."
             (when xlsp-mode
-              (cl-destructuring-bind (beg . end)
-                  (cons (xlsp-completion-state-beg completion-state)
-                        (+ (xlsp-completion-state-beg completion-state)
-                           (length (xlsp-completion-state-prefix completion-state))))
-                (when beg
-                  ;; `company--insert-candidate' requires point, not END.
-                  (setq company-prefix (buffer-substring-no-properties beg (point))))))))
+              (when-let ((beg (xlsp-completion-state-beg completion-state)))
+                ;; `company--insert-candidate' requires point, not END.
+                (setq company-prefix (buffer-substring-no-properties beg (point)))))))
          (xlsp-advise-contains
           (lambda (elt cur)
             "Closures contain dotted pairs (symbol . compiled-function)."
