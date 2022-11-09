@@ -183,11 +183,11 @@ I use inode in case project directory gets renamed.")
                 (file-name (buffer-file-name ,buffer))
                 (inode
                  (xlsp-inode (expand-file-name
-                             (if-let ((project (project-current nil file-name)))
-                                 (project-root project)
-                               (if (file-directory-p file-name)
-                                   file-name
-                                 (file-name-directory file-name))))))
+                              (if-let ((project (project-current nil file-name)))
+                                  (project-root project)
+                                (if (file-directory-p file-name)
+                                    file-name
+                                  (file-name-directory file-name))))))
                 (,project-dir (gethash inode xlsp--inode-data))
                 (,conn-key (cons mode inode)))
        ,@body)))
