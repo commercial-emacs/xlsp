@@ -17,10 +17,22 @@ Failing that we want the one before, or failing that, after."
   (let ((bounded-regex (concat "\\_<" (regexp-quote identifier) "\\_>"))
         case-fold-search)
     (save-excursion
-      (let ((after (re-search-forward bounded-regex nil t)))
-        (goto-char (if after (1- after) (point-max)))
-        (or (re-search-backward bounded-regex nil t)
-            after)))))
+      (let ((after (save-excursion
+                     (let (after)
+                       (while (and (setq after (re-search-forward bounded-regex nil t))
+                                   (nth 4 (syntax-ppss after))))
+                       after))))
+        ;; Ugly: open-closed intervals of re-search-forward confuse me.
+        (if (and after (<= (- after (point)) (length identifier)))
+            (point) ; special case for point at IDENTIFIER's start
+          (goto-char (if after (- after (length identifier)) (point-max)))
+          (or (save-excursion
+                (let (before)
+                  (while (and (setq before (re-search-backward bounded-regex nil t))
+                              (nth 4 (syntax-ppss before))))
+                  before))
+              (unless (eq (point) (point-max))
+                (point))))))))
 
 (cl-defmethod xref-backend-definitions ((_backend (eql xlsp)) identifier)
   "Note LSP keys off IDENTIFIER at a precise file location."

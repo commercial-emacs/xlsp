@@ -1,7 +1,7 @@
 ;;; xlsp.el --- Language Server Protocol client. -*- lexical-binding: t; -*-
 
 ;; Authors: dick        <dickie.smalls@commandlinesystems.com>
-;; URL: https://github.com/commercial-emacs/lsp
+;; URL: https://github.com/commercial-emacs/xlsp
 ;; Version: 0.0.1
 ;; Keywords: languages
 ;; Package-Requires: ((emacs "27.1") (company "0.9.13") (markdown-mode "2.6.1"))
@@ -833,7 +833,10 @@ CANDIDATES."
               (xlsp-completion-state-cached-texts state*) (when (xlsp-completion-state-cache-p state*) texts)
               (xlsp-completion-state-kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
               (xlsp-completion-state-details state*) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
-              (xlsp-completion-state-additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
+              (xlsp-completion-state-additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items)
+              ;; LSP's idea of where prefix begins is binding.
+              company-prefix (with-current-buffer buffer*
+                               (buffer-substring-no-properties beg (max beg (point)))))
         (clrhash (xlsp-completion-state-index-of state*))
         (dotimes (i (length texts))
           (puthash (nth i texts) i
@@ -921,13 +924,6 @@ CANDIDATES."
                 (when xlsp-mode
                   (unless (xlsp-completion-state-cache-p completion-state)
                     (setq company-candidates-cache restore-cache)))))))
-         (xlsp-advise-prefix
-          (lambda (&rest _args)
-            "Don't tell LSP what the prefix is."
-            (when xlsp-mode
-              (when-let ((beg (xlsp-completion-state-beg completion-state)))
-                ;; `company--insert-candidate' requires point, not END.
-                (setq company-prefix (buffer-substring-no-properties beg (point)))))))
          (xlsp-advise-contains
           (lambda (elt cur)
             "Closures contain dotted pairs (symbol . compiled-function)."
@@ -997,9 +993,6 @@ CANDIDATES."
           (add-function :around (symbol-function 'company-calculate-candidates)
                         xlsp-advise-cache
                         `((name . ,(xlsp-advise-tag xlsp-advise-cache))))
-          (add-function :before (symbol-function 'company-update-candidates)
-                        xlsp-advise-prefix
-                        `((name . ,(xlsp-advise-tag xlsp-advise-prefix))))
           (add-function :override (symbol-function 'company--contains)
                         xlsp-advise-contains
                         `((name . ,(xlsp-advise-tag xlsp-advise-contains))))

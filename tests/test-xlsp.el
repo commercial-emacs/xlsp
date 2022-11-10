@@ -264,7 +264,7 @@ void main (void) {
            (goto-def1 :what "server-reply" :ref goto-def0)
            (did-open :what "client-notification"
                      :method xlsp-notification-text-document/did-open))
-        (ert-simulate-command `(xref-find-definitions "foo.h")))))
+        (ert-simulate-command '(xref-find-definitions "foo.h")))))
     (should (get-buffer "foo.h"))
 
     (eval
