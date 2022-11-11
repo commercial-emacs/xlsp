@@ -833,10 +833,10 @@ CANDIDATES."
               (xlsp-completion-state-cached-texts state*) (when (xlsp-completion-state-cache-p state*) texts)
               (xlsp-completion-state-kinds state*) (mapcar #'xlsp-struct-completion-item-kind filtered-items)
               (xlsp-completion-state-details state*) (mapcar #'xlsp-struct-completion-item-detail filtered-items)
-              (xlsp-completion-state-additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items)
-              ;; LSP's idea of where prefix begins is binding.
-              company-prefix (with-current-buffer buffer*
-                               (buffer-substring-no-properties beg (max beg (point)))))
+              (xlsp-completion-state-additionses state*) (mapcar #'xlsp-struct-completion-item-additional-text-edits filtered-items))
+        (with-current-buffer buffer*
+          (setq company-prefix (buffer-substring-no-properties
+                                beg (max beg (point)))))
         (clrhash (xlsp-completion-state-index-of state*))
         (dotimes (i (length texts))
           (puthash (nth i texts) i
