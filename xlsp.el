@@ -895,7 +895,7 @@ CANDIDATES."
                (forward-p (>= (point) (+ beg (length orig-prefix))))
                (prefix (buffer-substring beg (point))))
       (and (string-prefix-p orig-prefix prefix)
-           (string-match-p "^[0-9a-z_]+$" prefix)))))
+           (string-match-p "^[[:alnum:]_]+$" prefix)))))
 
 (define-minor-mode xlsp-mode
   "Start and consult language server if applicable."
