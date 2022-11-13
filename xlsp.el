@@ -908,7 +908,12 @@ CANDIDATES."
               ;; Can't know what the textedits say until I ask.  To
               ;; retrench jsonrpc traffic, apply alphanum heuristic.
               (if (xlsp-heuristic-reuse-matches-p (current-buffer) completion-state)
-                  (funcall cb matches)
+                  (let ((prefix (buffer-substring
+                                 (xlsp-completion-state-beg completion-state)
+                                 (point))))
+                    (funcall cb (cl-remove-if-not
+                                 (apply-partially #'string-prefix-p prefix)
+                                 matches)))
                 (xlsp-do-request-completion
                  (current-buffer) (point)
                  (apply-partially #'xlsp-completion-callback
