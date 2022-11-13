@@ -890,6 +890,7 @@ CANDIDATES."
 (defun xlsp-heuristic-reuse-matches-p (buffer state)
   (with-current-buffer buffer
     (when-let ((beg (xlsp-completion-state-beg state))
+               (after-p (>= (point) beg))
                (orig-prefix (xlsp-completion-state-prefix state))
                (matches (xlsp-completion-state-cached-texts state))
                (forward-p (>= (point) (+ beg (length orig-prefix))))
