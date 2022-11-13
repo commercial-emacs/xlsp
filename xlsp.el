@@ -905,21 +905,19 @@ CANDIDATES."
   (let* ((completion-state (make-xlsp-completion-state))
          (completion-directive
           (lambda (cb)
-            (let ((matches (xlsp-completion-state-cached-texts completion-state)))
-              ;; Can't know what the textedits say until I ask.  To
-              ;; retrench jsonrpc traffic, apply alphanum heuristic.
-              (if (xlsp-heuristic-reuse-matches-p (current-buffer) completion-state)
-                  (let ((prefix (buffer-substring
-                                 (xlsp-completion-state-beg completion-state)
-                                 (point))))
-                    (funcall cb (cl-remove-if-not
-                                 (apply-partially #'string-prefix-p prefix)
-                                 matches)))
-                (xlsp-do-request-completion
-                 (current-buffer) (point)
-                 (apply-partially #'xlsp-completion-callback
-                                  completion-state (current-buffer) cb)
-                 :trigger-char (xlsp-completion-state-trigger-char completion-state))))))
+            (if (xlsp-heuristic-reuse-matches-p (current-buffer) completion-state)
+                (let ((prefix (buffer-substring
+                               (xlsp-completion-state-beg completion-state)
+                               (point)))
+                      (matches (xlsp-completion-state-cached-texts completion-state)))
+                  (funcall cb (cl-remove-if-not
+                               (apply-partially #'string-prefix-p prefix)
+                               matches)))
+              (xlsp-do-request-completion
+               (current-buffer) (point)
+               (apply-partially #'xlsp-completion-callback
+                                completion-state (current-buffer) cb)
+               :trigger-char (xlsp-completion-state-trigger-char completion-state)))))
          (xlsp-advise-cache
           ;; xlsp has its own cached-texts in completion-state.
           ;; This advice deals with company's cache.
