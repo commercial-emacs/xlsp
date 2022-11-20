@@ -335,7 +335,9 @@ I use inode in case project directory gets renamed.")
 
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
-     (funcall (with-current-buffer ,buffer (xlsp-synchronize-closure)) :send t)
+     (when-let ((conn (xlsp-connection-get ,buffer)))
+       (dolist (b (oref conn buffers))
+         (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t)))
      (funcall (function ,(if (memq :success-fn args)
                              'jsonrpc-async-request
                            'jsonrpc-request))

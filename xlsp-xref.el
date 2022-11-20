@@ -10,6 +10,8 @@
 
 (declare-function xlsp-do-request-workspace-symbols "xlsp")
 (declare-function xlsp-do-request-definition "xlsp")
+(declare-function xlsp-message "xlsp")
+(declare-function seq-keep "xlsp")
 
 (defsubst xlsp-xref-re-ceiling (identifier)
   "We want the occurrence of IDENTIFIER spanning point.
@@ -47,24 +49,34 @@ Failing that we want the one before, or failing that, after."
                (range-getter (if (eq location-type 'xlsp-struct-location-link)
                                  #'xlsp-struct-location-link-target-range
                                #'xlsp-struct-location-range)))
-      (mapcar
+      (seq-keep
        (lambda (location)
          (when-let ((file (xlsp-unurify (funcall uri-getter location)))
                     (range (funcall range-getter location))
                     (make-match
                      (lambda (buffer)
                        (with-current-buffer buffer
-                         (let ((beg (xlsp-our-pos
-                                     (current-buffer)
-                                     (xlsp-struct-range-start range)))
-                               (end (xlsp-our-pos
-                                     (current-buffer)
-                                     (xlsp-struct-range-end range))))
-                           (goto-char beg)
-                           (xref-make-match
-                            identifier
-                            (xref-make-file-location file (line-number-at-pos) (current-column))
-                            (- end beg)))))))
+                         ;; clangd has produced locations
+                         ;; that did not reflect dutifully reported
+                         ;; didChange notifications.  clangd
+                         ;; only got it right after a didSave.  Ergo,
+                         ;; the when-let.
+                         (if-let ((beg (xlsp-our-pos
+                                        (current-buffer)
+                                        (xlsp-struct-range-start range)))
+                                  (end (xlsp-our-pos
+                                        (current-buffer)
+                                        (xlsp-struct-range-end range))))
+                             (progn
+                               (goto-char beg)
+                               (xref-make-match
+                                identifier
+                                (xref-make-file-location file (line-number-at-pos) (current-column))
+                                (- end beg)))
+                           (prog1 nil
+                             (xlsp-message
+                              "xref-backend-definitions: No such range %S in %s"
+                              range file)))))))
            (if-let ((buffer (find-buffer-visiting file)))
                ;; Else case won't have unsaved changes to FILE
                (funcall make-match buffer)
