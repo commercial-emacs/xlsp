@@ -6,6 +6,7 @@
 (declare-function xlsp-message "xlsp")
 (declare-function xlsp-connection-register-watched-files "xlsp")
 (declare-function xlsp-connection-unregister-watched-files "xlsp")
+(declare-function xlsp-conn-files "xlsp")
 
 (cl-defgeneric xlsp-handle-request (conn method params))
 (cl-defmethod xlsp-handle-request (_conn method _params)
@@ -35,15 +36,16 @@
             (section (xlsp-struct-configuration-item-section item)))
         (when-let ((path (xlsp-unurify scope-uri))
                    (default-directory (when (file-directory-p path)
-                                        (file-name-as-directory path))))
+                                        (file-name-as-directory path)))
+                   (buf (ignore-errors
+                          (find-buffer-visiting (car (xlsp-conn-files conn))))))
           (with-temp-buffer
             ;; Ad hoc Olsen in 1b21ee0:
             ;; "If the [dir-locals] element is of the form (MAJOR-MODE . ALIST),
             ;; and the buffer's major mode is derived from MAJOR-MODE,
             ;; then all the variables in ALIST are applied."
             (setq-local major-mode
-                        (buffer-local-value 'major-mode
-                                            (get-buffer (car (oref conn buffers)))))
+                        (buffer-local-value 'major-mode buf))
             ;; Calls `dir-locals-find-file' to find nearest .dir-locals.el.
             (hack-dir-local-variables-non-file-buffer)
             (or (plist-get (or (bound-and-true-p xlsp-workspace-configuration)

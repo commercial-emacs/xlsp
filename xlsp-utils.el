@@ -13,7 +13,9 @@
   ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
    (capabilities :initform nil)
    (server-info :initform nil)
-   (buffers :initform nil)
+   ;; if eieio can make this private, then a public accessor can do
+   ;; the dirty of `xlsp-conn-files'
+   (files :initform nil)
    (watched-files :initform nil)))
 
 (defun xlsp-urify (path)

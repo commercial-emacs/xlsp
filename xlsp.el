@@ -228,7 +228,7 @@ I use inode in case project directory gets renamed.")
                         (setf (xlsp-gv-connection conn-key)
                               (xlsp--connect buffer project-dir)))))
       (prog1 ret
-        (cl-pushnew buffer (oref ret buffers))))))
+        (cl-pushnew (buffer-file-name buffer) (oref ret files))))))
 
 (defun xlsp-connection-reset (buffer)
   (xlsp-connection-remove buffer)
@@ -334,10 +334,16 @@ I use inode in case project directory gets renamed.")
             (xlsp-synchronize-state-version synchronize*))))
        (make-xlsp-synchronize-state :buffer (current-buffer))))))
 
+(defsubst xlsp-conn-files (conn)
+  "Glaring side effect."
+  (oset conn files (cl-remove-if-not #'find-buffer-visiting
+                                     (oref conn files)))
+  (oref conn files))
+
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
      (when-let ((conn (xlsp-connection-get ,buffer)))
-       (dolist (b (oref conn buffers))
+       (dolist (b (seq-keep #'find-buffer-visiting (xlsp-conn-files conn)))
          (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t))
        (funcall (function ,(if (memq :success-fn args)
                                'jsonrpc-async-request
@@ -1038,7 +1044,7 @@ CANDIDATES."
           (error (xlsp-message "xlsp-mode: %s, %s"
                                (buffer-name) (cl-second err)))))
       (xlsp-toggle-hooks nil)
-      (xlsp-deregister-buffer (current-buffer))
+      (xlsp-deregister-file (buffer-file-name))
       (unless global-eldoc-mode
         (eldoc-mode -1))
       (unless global-company-mode
@@ -1333,14 +1339,12 @@ CANDIDATES."
                                        (point-min) (point-max)))))))))
        (current-buffer)))))
 
-(defun xlsp-deregister-buffer (buffer)
-  "Dispose connection if last registered buffer."
-  (when-let ((conn (xlsp-connection-get buffer)))
-    (oset conn buffers (delq buffer
-                             (cl-remove-if-not
-                              #'buffer-live-p
-                              (oref conn buffers))))
-    (unless (oref conn buffers)
+(defun xlsp-deregister-file (file)
+  "Dispose connection if last registered file."
+  (when-let ((buffer (find-buffer-visiting file))
+             (conn (xlsp-connection-get buffer)))
+    (oset conn files (delq file (xlsp-conn-files conn)))
+    (unless (xlsp-conn-files conn)
       (xlsp-connection-remove buffer))))
 
 (defalias 'xlsp-toggle-hooks
