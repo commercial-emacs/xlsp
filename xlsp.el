@@ -338,11 +338,11 @@ I use inode in case project directory gets renamed.")
   `(progn
      (when-let ((conn (xlsp-connection-get ,buffer)))
        (dolist (b (oref conn buffers))
-         (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t)))
-     (funcall (function ,(if (memq :success-fn args)
-                             'jsonrpc-async-request
-                           'jsonrpc-request))
-              ,@args)))
+         (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t))
+       (funcall (function ,(if (memq :success-fn args)
+                               'jsonrpc-async-request
+                             'jsonrpc-request))
+                conn ,@args))))
 
 (defsubst xlsp-new-text (item)
   (or (when-let ((text-edit
@@ -432,7 +432,7 @@ pairs for its frontends."
                                           xlsp-signature-help-trigger-kind/trigger-character
                                         xlsp-signature-help-trigger-kind/content-change)))))
           (xlsp-sync-then-request
-           buffer conn
+           buffer
            xlsp-request-text-document/signature-help
            (xlsp-jsonify params)
            :success-fn
@@ -539,8 +539,7 @@ retrofits current logic to v27."
           (eldoc-cb-args '(:buffer t)))
       (if (equal (car cache*) heuristic-target)
           (apply eldoc-cb (cdr cache*) eldoc-cb-args)
-        (let* ((conn (xlsp-connection-get buffer))
-               (params (make-xlsp-struct-hover-params
+        (let* ((params (make-xlsp-struct-hover-params
                         :text-document (make-xlsp-struct-text-document-identifier
                                         :uri (xlsp-urify (concat (buffer-file-name buffer))))
                         :position (let ((their-pos (xlsp-their-pos buffer (point))))
@@ -581,10 +580,10 @@ retrofits current logic to v27."
           (if sync*
               (funcall success-fn
                        (xlsp-sync-then-request
-                        buffer conn xlsp-request-text-document/hover
+                        buffer xlsp-request-text-document/hover
                         (xlsp-jsonify params)))
             (xlsp-sync-then-request
-             buffer conn xlsp-request-text-document/hover
+             buffer xlsp-request-text-document/hover
              (xlsp-jsonify params)
              :success-fn success-fn :error-fn error-fn)))))))
 
@@ -610,12 +609,12 @@ The second refers to LSP document synchronization."
                                 (when trigger-char (char-to-string trigger-char))))))
     (if sync
         (let ((result-plist (xlsp-sync-then-request
-                             buffer conn
+                             buffer
                              xlsp-request-text-document/completion
                              (xlsp-jsonify params))))
           (funcall callback (xlsp-unjsonify 'xlsp-struct-completion-list result-plist)))
       (xlsp-sync-then-request
-       buffer conn
+       buffer
        xlsp-request-text-document/completion
        (xlsp-jsonify params)
        :success-fn
@@ -638,7 +637,7 @@ The second refers to LSP document synchronization."
                                    :line (car their-pos)
                                    :character (cdr their-pos)))))
              (result-array (xlsp-sync-then-request
-                            buffer conn
+                            buffer
                             xlsp-request-text-document/definition
                             (xlsp-jsonify params))))
     (unless (vectorp result-array)
@@ -678,13 +677,12 @@ The second refers to LSP document synchronization."
        :json-false))))
 
 (defun xlsp-do-request-formatting (buffer)
-  (let* ((conn (xlsp-connection-get buffer))
-         (params (make-xlsp-struct-document-formatting-params
+  (let* ((params (make-xlsp-struct-document-formatting-params
                   :text-document (make-xlsp-struct-text-document-identifier
                                   :uri (xlsp-urify (concat (buffer-file-name buffer))))
                   :options (xlsp-formatting-options buffer)))
          (result-array (xlsp-sync-then-request
-                        buffer conn
+                        buffer
                         xlsp-request-text-document/formatting
                         (xlsp-jsonify params))))
     (when-let ((edits
@@ -693,8 +691,7 @@ The second refers to LSP document synchronization."
       (xlsp-apply-text-edits edits))))
 
 (defun xlsp-do-request-range-formatting (buffer beg end)
-  (let* ((conn (xlsp-connection-get buffer))
-         (params (make-xlsp-struct-document-range-formatting-params
+  (let* ((params (make-xlsp-struct-document-range-formatting-params
                   :text-document (make-xlsp-struct-text-document-identifier
                                   :uri (xlsp-urify (concat (buffer-file-name buffer))))
                   :range (make-xlsp-struct-range
@@ -708,7 +705,7 @@ The second refers to LSP document synchronization."
                                   :character (cdr their-pos))))
                   :options (xlsp-formatting-options buffer)))
          (result-array (xlsp-sync-then-request
-                        buffer conn
+                        buffer
                         xlsp-request-text-document/range-formatting
                         (xlsp-jsonify params))))
     (when-let ((edits
@@ -721,8 +718,7 @@ The second refers to LSP document synchronization."
 Usually nouns follow prepositions (qq/on/), and given types as
 nouns, e.g., variable types, are so prevalent in software, the
 naming is fairly egregious."
-  (let* ((conn (xlsp-connection-get buffer))
-         (params (make-xlsp-struct-document-on-type-formatting-params
+  (let* ((params (make-xlsp-struct-document-on-type-formatting-params
                  :text-document (make-xlsp-struct-text-document-identifier
                                  :uri (xlsp-urify (concat (buffer-file-name buffer))))
                  :position (let ((their-pos (xlsp-their-pos buffer pos)))
@@ -732,7 +728,7 @@ naming is fairly egregious."
                  :ch (char-to-string on-character)
                  :options (xlsp-formatting-options buffer)))
          (result-array (xlsp-sync-then-request
-                        buffer conn
+                        buffer
                         xlsp-request-text-document/on-type-formatting
                         (xlsp-jsonify params))))
     (when-let ((edits
@@ -777,7 +773,7 @@ naming is fairly egregious."
              (params (make-xlsp-struct-workspace-symbol-params
                       :query query))
              (result-array (xlsp-sync-then-request
-                            buffer conn
+                            buffer
                             xlsp-request-workspace/symbol
                             (xlsp-jsonify params))))
     (seq-map (apply-partially
