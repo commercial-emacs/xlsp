@@ -283,24 +283,25 @@ I use inode in case project directory gets renamed.")
           (when send
             (when (xlsp-synchronize-state-timer synchronize*)
               (cancel-timer (xlsp-synchronize-state-timer synchronize*)))
-            (let* ((conn (xlsp-connection-get
-                          (xlsp-synchronize-state-buffer synchronize*)))
-                   (kind (xlsp-sync-kind conn xlsp-struct-text-document-sync-options-change))
-                   (changes
-                    (cond ((eq kind xlsp-text-document-sync-kind/none) nil)
-                          ((eq kind xlsp-text-document-sync-kind/incremental)
-                           (apply #'vector
-                                  (nreverse
-                                   (copy-sequence
-                                    (xlsp-synchronize-state-events synchronize*)))))
-                          (t (let ((full-text
-                                    (with-current-buffer
-                                        (xlsp-synchronize-state-buffer synchronize*)
-                                      (save-restriction
-                                        (widen)
-                                        (buffer-substring-no-properties
-                                         (point-min) (point-max))))))
-                               (vector (xlsp-literal :text full-text)))))))
+            (when-let ((conn (xlsp-connection-get
+                              (xlsp-synchronize-state-buffer synchronize*)))
+                       (kind (xlsp-sync-kind
+                              conn xlsp-struct-text-document-sync-options-change))
+                       (changes
+                        (cond ((eq kind xlsp-text-document-sync-kind/none) nil)
+                              ((eq kind xlsp-text-document-sync-kind/incremental)
+                               (apply #'vector
+                                      (nreverse
+                                       (copy-sequence
+                                        (xlsp-synchronize-state-events synchronize*)))))
+                              (t (let ((full-text
+                                        (with-current-buffer
+                                            (xlsp-synchronize-state-buffer synchronize*)
+                                          (save-restriction
+                                            (widen)
+                                            (buffer-substring-no-properties
+                                             (point-min) (point-max))))))
+                                   (vector (xlsp-literal :text full-text)))))))
               (when (cl-plusp (length changes))
                 (jsonrpc-notify     ; notifications are fire-and-forget
                  conn
@@ -843,14 +844,14 @@ CANDIDATES."
         (dotimes (i (length texts))
           (puthash (nth i texts) i
                    (xlsp-completion-state-index-of state*)))
-        (when (xlsp-capability (xlsp-connection-get buffer*)
-                xlsp-struct-server-capabilities-completion-provider
-                xlsp-struct-completion-options-resolve-provider)
+        (when-let ((conn (xlsp-connection-get buffer*))
+                   (capable-p (xlsp-capability conn
+                                xlsp-struct-server-capabilities-completion-provider
+                                xlsp-struct-completion-options-resolve-provider)))
           ;; "By default the request can only delay the
           ;; computation of the detail and documentation
           ;; properties."
-          (cl-loop with conn = (xlsp-connection-get buffer*)
-                   with obeg = (xlsp-completion-state-beg state*)
+          (cl-loop with obeg = (xlsp-completion-state-beg state*)
                    with oprefix = (xlsp-completion-state-prefix state*)
                    for i below (length filtered-items)
                    for pre = (nth i filtered-items)
@@ -1028,9 +1029,10 @@ CANDIDATES."
                     (funcall (xlsp-did-open-text-document))))
               (ignore "Presume async handshake will install hooks."))))
       ;; those add-functions are forever...
-      (when (xlsp-sync-p
-             (xlsp-connection-get (current-buffer))
-             xlsp-struct-text-document-sync-options-open-close)
+      (when-let ((conn (xlsp-connection-get (current-buffer)))
+                 (sync-p (xlsp-sync-p
+                          (xlsp-connection-get (current-buffer))
+                          xlsp-struct-text-document-sync-options-open-close)))
         ;; things like project-kill-buffers kill the process buffer
         ;; before did-close can attempt notification
         (condition-case err
@@ -1414,6 +1416,10 @@ CANDIDATES."
                   ,did-save-predicate
                   xlsp-did-save-text-document]
                  [kill-buffer-hook
+                  identity
+                  (lambda ()
+                    (apply-partially #'xlsp-mode -1))]
+                 [change-major-mode-hook
                   identity
                   (lambda ()
                     (apply-partially #'xlsp-mode -1))]
