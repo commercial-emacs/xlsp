@@ -140,8 +140,8 @@ void main (void) {
         (let ((c-mode-hook (add-hook 'c-mode-hook #'xlsp-mode)))
           (with-current-buffer (find-file "foo.c")
             (should xlsp-mode))))))
-    (set-buffer "foo.c")
 
+    (set-buffer "foo.c")
     (eval
      (quote
       (test-xlsp-should
@@ -266,6 +266,23 @@ void main (void) {
                      :method xlsp-notification-text-document/did-open))
         (ert-simulate-command '(xref-find-definitions "foo.h")))))
     (should (get-buffer "foo.h"))
+
+    (when (>= emacs-major-version 28)
+      (set-buffer "foo.h")
+      (goto-char (point-min))
+      (let ((messages-point (with-current-buffer "*Messages*" (point))))
+        (eval
+         (quote
+          (test-xlsp-should
+           ((did-change :what "client-notification"
+                        :method xlsp-notification-text-document/did-change))
+           (ert-simulate-command '(search-forward "CONSTANT"))
+           (replace-match "workaround")
+           (ert-run-idle-timers))))
+        (should (with-current-buffer "*Messages*"
+                  (save-excursion
+                    (goto-char messages-point)
+                    (search-forward-regexp "casify" nil t))))))
 
     (eval
      (quote

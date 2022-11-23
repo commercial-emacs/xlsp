@@ -265,8 +265,25 @@ I use inode in case project directory gets renamed.")
         (lambda (synchronize* &key cumulate send save version &allow-other-keys)
           "SYNCHRONIZE* is naturally thread unsafe state."
           (when cumulate
-            (push cumulate
-                  (xlsp-synchronize-state-events synchronize*))
+            ;; workaround (explained in Commercial 587311e)
+            (when-let ((preceding (car (xlsp-synchronize-state-events synchronize*)))
+                       (preceding-range (plist-get preceding :range))
+                       (preceding-end (plist-get preceding-range :end))
+                       (preceding-start (plist-get preceding-range :start))
+                       (current-range (plist-get cumulate :range))
+                       (casify-p (and (let (case-fold-search)
+                                        (string-match-p
+                                         "[A-Z]" (plist-get preceding :text)))
+                                      (equal (plist-get preceding :text)
+                                             (plist-get cumulate :text))
+                                      (equal (plist-get preceding-range :start)
+                                             (plist-get current-range :start))
+                                      (= (length (plist-get preceding :text))
+                                         (- (plist-get preceding-end :character)
+                                            (plist-get preceding-start :character))))))
+              (xlsp-message "xlsp-synchronize-closure: discarded casify %S" preceding)
+              (pop (xlsp-synchronize-state-events synchronize*)))
+            (push cumulate (xlsp-synchronize-state-events synchronize*))
             (cl-incf (xlsp-synchronize-state-version synchronize*))
             (when (and (not (xlsp-synchronize-state-timer synchronize*))
                        (not send))
@@ -288,36 +305,36 @@ I use inode in case project directory gets renamed.")
                        (kind (xlsp-sync-kind
                               conn xlsp-struct-text-document-sync-options-change))
                        (changes
-                        (cond ((eq kind xlsp-text-document-sync-kind/none) nil)
+                        (cond ((eq kind xlsp-text-document-sync-kind/none)
+                               nil)
                               ((eq kind xlsp-text-document-sync-kind/incremental)
-                               (apply #'vector
-                                      (nreverse
-                                       (copy-sequence
-                                        (xlsp-synchronize-state-events synchronize*)))))
-                              (t (let ((full-text
-                                        (with-current-buffer
-                                            (xlsp-synchronize-state-buffer synchronize*)
-                                          (save-restriction
-                                            (widen)
-                                            (buffer-substring-no-properties
-                                             (point-min) (point-max))))))
-                                   (vector (xlsp-literal :text full-text)))))))
-              (when (cl-plusp (length changes))
-                (jsonrpc-notify     ; notifications are fire-and-forget
-                 conn
-                 xlsp-notification-text-document/did-change
-                 (xlsp-jsonify
-                  (make-xlsp-struct-did-change-text-document-params
-                   :text-document
-                   (make-xlsp-struct-versioned-text-document-identifier
-                    :uri (xlsp-urify
-                          (buffer-file-name
-                           (xlsp-synchronize-state-buffer synchronize*)))
-                    :version (xlsp-synchronize-state-version synchronize*))
-                   :content-changes
-                   (prog1 changes
-                     ;; Events sent; clear for next batch.
-                     (setf (xlsp-synchronize-state-events synchronize*) nil))))))))
+                               (nreverse
+                                (copy-sequence
+                                 (xlsp-synchronize-state-events synchronize*))))
+                              (t
+                               (let ((full-text
+                                      (with-current-buffer
+                                          (xlsp-synchronize-state-buffer synchronize*)
+                                        (save-restriction
+                                          (widen)
+                                          (buffer-substring-no-properties
+                                           (point-min) (point-max))))))
+                                 (list (xlsp-literal :text full-text)))))))
+              (jsonrpc-notify     ; notifications are fire-and-forget
+               conn
+               xlsp-notification-text-document/did-change
+               (xlsp-jsonify
+                (make-xlsp-struct-did-change-text-document-params
+                 :text-document
+                 (make-xlsp-struct-versioned-text-document-identifier
+                  :uri (xlsp-urify
+                        (buffer-file-name
+                         (xlsp-synchronize-state-buffer synchronize*)))
+                  :version (xlsp-synchronize-state-version synchronize*))
+                 :content-changes
+                 (prog1 (apply #'vector changes)
+                   ;; Events sent; clear for next batch.
+                   (setf (xlsp-synchronize-state-events synchronize*) nil)))))))
           (when save
             (jsonrpc-notify
              (xlsp-connection-get (xlsp-synchronize-state-buffer synchronize*))
