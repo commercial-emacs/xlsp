@@ -630,6 +630,8 @@ retrofits current logic to v27."
 The first says whether to jsonrpc-async-request or jsonrpc-request.
 The second refers to LSP document synchronization."
   (when-let ((conn (xlsp-connection-get buffer))
+             (relevant-p (with-current-buffer buffer
+                           (not (xlsp-comment-or-string-p))))
              (params (make-xlsp-struct-completion-params
                       :text-document (make-xlsp-struct-text-document-identifier
                                       :uri (xlsp-urify (concat (buffer-file-name buffer))))
