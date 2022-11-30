@@ -554,7 +554,8 @@ pairs for its frontends."
                                               (xlsp-struct-signature-help-signatures help)
                                               "\n")))
                (setcar cache* heuristic-target)
-               (setcdr cache* formatted)
+               (when (car cache*)
+                 (setcdr cache* formatted))
                (funcall eldoc-cb formatted)))
            :error-fn
            (lambda (error)
@@ -607,7 +608,8 @@ retrofits current logic to v27."
                               (mapconcat #'identity
                                          (seq-keep #'xlsp-format-markup markups) "\n")))
                     (setcar cache* heuristic-target)
-                    (setcdr cache* formatted)
+                    (when (car cache*)
+                      (setcdr cache* formatted))
                     (apply eldoc-cb formatted eldoc-cb-args))))
                (error-fn
                 (lambda (error)
