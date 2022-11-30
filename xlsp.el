@@ -440,7 +440,6 @@ I use inode in case project directory gets renamed.")
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
-
   (when-let ((buffer (find-buffer-visiting file))
              (relevant-p (with-current-buffer buffer
                            (not (xlsp-comment-or-string-p)))))
