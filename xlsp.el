@@ -444,7 +444,7 @@ pairs for its frontends."
              (relevant-p (with-current-buffer buffer
                            (not (xlsp-comment-or-string-p)))))
     (let ((heuristic-target (thing-at-point 'symbol)))
-      (if (equal (car cache*) heuristic-target)
+      (if (and heuristic-target (equal (car cache*) heuristic-target))
           (funcall eldoc-cb (cdr cache*))
         (when-let ((conn (xlsp-connection-get buffer))
                    (params (make-xlsp-struct-signature-help-params
@@ -574,7 +574,7 @@ retrofits current logic to v27."
     (let ((heuristic-target (with-current-buffer buffer
                               (thing-at-point 'symbol)))
           (eldoc-cb-args '(:buffer t)))
-      (if (equal (car cache*) heuristic-target)
+      (if (and heuristic-target (equal (car cache*) heuristic-target))
           (apply eldoc-cb (cdr cache*) eldoc-cb-args)
         (let* ((params (make-xlsp-struct-hover-params
                         :text-document (make-xlsp-struct-text-document-identifier
