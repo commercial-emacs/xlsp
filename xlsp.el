@@ -823,7 +823,7 @@ naming is fairly egregious."
 
 (defvar-local xlsp-hooks-alist nil
   "Alist entries of the form (HOOKS-SYM . HOOK-COMPILED-FUNC).
-Hooks must be tracked since closures ruin remove-hook's #'equal criterion.")
+Hooks must be tracked since closures ruin remove-hook's #\='equal criterion.")
 
 (defun xlsp-completion-callback (state* buffer* cb* completion-list)
   "The interval [BEG, END) spans the region supplantable by
@@ -1137,6 +1137,9 @@ CANDIDATES."
                  :connection-type 'pipe
                  :coding 'utf-8-emacs-unix
                  :noquery t
+                 ;; jsonrpc-process-connection initialize-instance
+                 ;; emplaces the output buffer far too late.  Do it now.
+                 :buffer (get-buffer-create (format " *%s output*" name))
                  :stderr (get-buffer-create (format "*%s stderr*" name))
                  :file-handler t))
        (conn (condition-case err
