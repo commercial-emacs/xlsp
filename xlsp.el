@@ -455,6 +455,8 @@ pairs for its frontends."
                                          :line (car their-pos)
                                          :character (cdr their-pos)))
                             :context (make-xlsp-struct-signature-help-context
+                                      :is-retrigger
+                                      (if (car cache*) t :json-false)
                                       :trigger-kind
                                       (if (and (eq last-command 'self-insert-command)
                                                (characterp last-command-event)
