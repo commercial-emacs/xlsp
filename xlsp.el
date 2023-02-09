@@ -1075,9 +1075,9 @@ CANDIDATES."
       (xlsp-toggle-hooks nil)
       (xlsp-deregister-file (buffer-file-name))
       (unless global-eldoc-mode
-        (eldoc-mode -1))
+        (eldoc-mode 0))
       (unless global-company-mode
-        (company-mode -1))
+        (company-mode 0))
       (mapc #'kill-local-variable '(company-backends
                                     company-minimum-prefix-length
                                     company-idle-delay
@@ -1095,7 +1095,7 @@ CANDIDATES."
     (with-current-buffer b
       (when (equal major-mode (car conn-key))
         (when xlsp-mode
-          (xlsp-mode -1)))))
+          (xlsp-mode 0)))))
 
   (let ((conn (xlsp-gv-connection conn-key)))
     (when (and conn
@@ -1454,16 +1454,25 @@ CANDIDATES."
                  [kill-buffer-hook
                   identity
                   (lambda ()
-                    (apply-partially #'xlsp-mode -1))]
+                    (apply-partially #'xlsp-mode 0))]
                  [change-major-mode-hook
                   identity
                   (lambda ()
-                    (apply-partially #'xlsp-mode -1))]
+                    (apply-partially #'xlsp-mode 0))]
                  [before-revert-hook
                   ,did-open-close-predicate
                   (lambda ()
-                    (apply-partially #'xlsp-mode -1))]
+                    (apply-partially #'xlsp-mode 0))]
                  ;; xlsp-mode takes care of after-revert.
+                 [after-set-visited-file-name-hook
+                  ,did-open-close-predicate
+                  (lambda ()
+                    (apply-partially
+                     (lambda (old-buffer-file-name*)
+                       (let ((buffer-file-name old-buffer-file-name*))
+                         (xlsp-mode 0))
+                       (xlsp-mode))
+                     buffer-file-name))]
                  [eldoc-documentation-functions
                   ,signature-help-predicate
                   (lambda ()
