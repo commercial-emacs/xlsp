@@ -16,6 +16,7 @@
 ;; M-.                  jump to definition
 ;; M-,                  jump back from definition
 ;; C-u M-.              prompt jump to definition (TAB to complete)
+;; M-?                  find references
 ;;
 ;; .emacs or init.el configuration
 ;; -------------------------------
