@@ -277,7 +277,7 @@ I use inode in case project directory gets renamed.")
         (lambda (synchronize* &key cumulate send save version &allow-other-keys)
           "SYNCHRONIZE* is naturally thread unsafe state."
           (when cumulate
-            ;; workaround (explained in Commercial 587311e)
+            ;; workaround (explained in Commercial 5e80af7)
             (when-let ((preceding (car (xlsp-synchronize-state-events synchronize*)))
                        (preceding-range (plist-get preceding :range))
                        (preceding-end (plist-get preceding-range :end))
@@ -695,6 +695,27 @@ The second refers to LSP document synchronization."
                                                   'xlsp-struct-location-link)
                                  result-array)))
       locations)))
+
+(defun xlsp-do-request-references (buffer pos)
+  "This retrieves locations."
+  (when-let ((conn (xlsp-connection-get buffer))
+             (params (make-xlsp-struct-reference-params
+                      :text-document (make-xlsp-struct-text-document-identifier
+                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                                  (make-xlsp-struct-position
+                                   :line (car their-pos)
+                                   :character (cdr their-pos)))
+                      :context (make-xlsp-struct-reference-context
+                                :include-declaration t)))
+             (result-array (xlsp-sync-then-request
+                            buffer
+                            xlsp-request-text-document/references
+                            (xlsp-jsonify params))))
+    (unless (vectorp result-array)
+      (setq result-array (vector result-array)))
+    (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-location)
+             result-array)))
 
 (defsubst xlsp-formatting-options (buffer)
   (defvar c-basic-offset)

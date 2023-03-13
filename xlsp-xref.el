@@ -10,6 +10,7 @@
 
 (declare-function xlsp-do-request-workspace-symbols "xlsp")
 (declare-function xlsp-do-request-definition "xlsp")
+(declare-function xlsp-do-request-references "xlsp")
 (declare-function xlsp-message "xlsp")
 (declare-function seq-keep "xlsp")
 
@@ -36,12 +37,10 @@ Failing that we want the one before, or failing that, after."
               (unless (eq (point) (point-max))
                 (point))))))))
 
-(cl-defmethod xref-backend-definitions ((_backend (eql xlsp)) identifier)
-  "Note LSP keys off IDENTIFIER at a precise file location."
+(defun xlsp-xref--retrieve-locations (requester identifier)
   (save-excursion
     (when-let ((where (xlsp-xref-re-ceiling identifier))
-               (locations (xlsp-do-request-definition
-                           (current-buffer) (goto-char where)))
+               (locations (funcall requester (current-buffer) (goto-char where)))
                (location-type (type-of (car locations)))
                (uri-getter (if (eq location-type 'xlsp-struct-location-link)
                                #'xlsp-struct-location-link-target-uri
@@ -60,7 +59,7 @@ Failing that we want the one before, or failing that, after."
                          ;; that did not reflect dutifully reported
                          ;; didChange notifications.  clangd
                          ;; only got it right after a didSave.  Ergo,
-                         ;; the when-let.
+                         ;; the if-let.
                          (if-let ((beg (xlsp-our-pos
                                         (current-buffer)
                                         (xlsp-struct-range-start range)))
@@ -86,6 +85,14 @@ Failing that we want the one before, or failing that, after."
                  (insert-file-contents-literally file)
                  (funcall make-match (current-buffer)))))))
        locations))))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql xlsp)) identifier)
+  "Note LSP keys off IDENTIFIER at a precise file location."
+  (xlsp-xref--retrieve-locations #'xlsp-do-request-definition identifier))
+
+(cl-defmethod xref-backend-references ((_backend (eql xlsp)) identifier)
+  "Note LSP keys off IDENTIFIER at a precise file location."
+  (xlsp-xref--retrieve-locations #'xlsp-do-request-references identifier))
 
 (cl-defmethod xref-backend-identifier-completion-table ((_backend (eql 'xlsp)))
   "Succumb to Monnier's Rube Goldberg contraption.
