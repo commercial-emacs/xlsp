@@ -138,6 +138,9 @@ When undo is disabled this behaves like `progn'."
 (defmacro xlsp-advise-tag (variable)
   `(symbol-name ',variable))
 
+(defsubst xlsp--test-p ()
+  (and (fboundp 'ert-running-test) (ert-running-test)))
+
 (cl-defmethod initialize-instance ((conn xlsp-connection) _slots)
   (cl-call-next-method)
   (let ((xlsp-advise-sentinel
@@ -154,7 +157,13 @@ When undo is disabled this behaves like `progn'."
                   :warning)))))))
     (add-function :around (process-sentinel (jsonrpc--process conn))
                   xlsp-advise-sentinel
-                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel))))))
+                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel)))))
+  (unless (xlsp--test-p)
+    (add-function :around (process-filter (jsonrpc--process conn))
+                  (lambda (f &rest args)
+                    "Brutal pp-buffer down-list and indent."
+                    (cl-letf (((symbol-function 'pp-buffer) #'ignore))
+                      (apply f args))))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).
@@ -1445,8 +1454,7 @@ CANDIDATES."
           (format-predicate
            (lambda (conn)
              "Really annoying feature."
-             (when (and (fboundp 'ert-running-test)
-                        (ert-running-test))
+             (when (xlsp--test-p)
                (xlsp-format-trigger-characters conn))))
           ;; Note a clear_message() is called on every keystroke,
           ;; but the elisp-mode eldoc functions are fast enough
