@@ -1261,12 +1261,12 @@ CANDIDATES."
       (apply-partially
        (lambda (state*)
          "Return (BEG END BLANDY-MONNIER . _PROPS)"
-         (let* ((heuristic-prefix
-                 (bounds-of-thing-at-point 'symbol))
+         (let* ((heuristic-prefix (bounds-of-thing-at-point 'symbol))
                 (for-buffer (current-buffer))
                 (for-point (point))
                 (beg (or (car heuristic-prefix) for-point))
                 (end (or (cdr heuristic-prefix) for-point))
+                cache-regardless
                 (blandy-monnier
                  ;; BLANDY-MONNIER takes three arguments
                  ;; PREFIX, PREDICATE, NIL-FOR-TRY-ELSE-T.
@@ -1277,25 +1277,34 @@ CANDIDATES."
                  ;; its hamfisted api and for the felony of
                  ;; minibuffer.el generally.
                  (lambda (prefix pred nil-for-try)
-                   (with-current-buffer for-buffer
-                     (let* ((matches
-                             (if (xlsp-heuristic-reuse-matches-p for-buffer state*)
-                                 (xlsp-completion-state-cached-texts state*)
-                               (xlsp-do-request-completion
-                                for-buffer
-                                for-point
-                                (apply-partially #'xlsp-completion-callback
-                                                 state* for-buffer
-                                                 #'identity)
-                                :sync t)))
-                            (pruned (cl-remove-if-not
-                                     (apply-partially #'string-prefix-p prefix)
-                                     matches)))
+                   (let ((expensive
+                          (lambda ()
+                            (cl-remove-if-not
+                             (apply-partially #'string-prefix-p prefix)
+                             (cond ((xlsp-heuristic-reuse-matches-p for-buffer state*)
+                                    (xlsp-completion-state-cached-texts state*))
+                                   ((equal (car cache-regardless)
+                                           (cons for-buffer for-point))
+                                    (cdr cache-regardless))
+                                   (t
+                                    (xlsp-do-request-completion
+                                     for-buffer
+                                     for-point
+                                     (apply-partially
+                                      #'xlsp-completion-callback
+                                      state* for-buffer
+                                      (lambda (texts)
+                                        (prog1 texts
+                                          (setq cache-regardless
+                                                (cons (cons for-buffer for-point)
+                                                      texts)))))
+                                     :sync t)))))))
+                     (with-current-buffer for-buffer
                        (cl-case nil-for-try
                          ((nil)
-                          (try-completion prefix pruned))
+                          (try-completion prefix (funcall expensive)))
                          ((t)
-                          (all-completions "" pruned pred))))))))
+                          (all-completions "" (funcall expensive) pred))))))))
            (list beg end blandy-monnier)))
        (make-xlsp-completion-state)))))
 
