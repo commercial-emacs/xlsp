@@ -19,6 +19,7 @@
          (progn
            (vc-git-create-repo)
            (vc-git-command nil 0 nil "config" "--add" "user.name" "frou")
+           (vc-git-command nil 0 nil "config" "--add" "user.email" "frou@example.com")
            (cl-loop for (file . content) in ',files
                     do (with-temp-file (expand-file-name file)
                          (insert (string-trim-left content))))
