@@ -488,81 +488,79 @@ pairs for its frontends."
              (when-let ((help
                          (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
                         (formatify
-                         (apply-partially
-                          (cl-function
-                           (lambda (i* sig
-                                       &aux
-                                       (sig-active
-                                        (xlsp-struct-signature-help-active-signature help))
-                                       (documentation
-                                        (xlsp-struct-signature-information-documentation sig))
-                                       (label
-                                        (xlsp-struct-signature-information-label sig))
-                                       (params
-                                        (xlsp-struct-signature-information-parameters sig))
-                                       (param-active
-                                        (or (xlsp-struct-signature-information-active-parameter sig)
-                                            (xlsp-struct-signature-help-active-parameter help)))
-                                       (i (prog1 i* (cl-incf i*)))
-                                       formals-beg formals-end)
-                             (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
-                               ;; Ad-hoc attempt to parse label as <name>(<args>)
-                               (setq formals-beg (match-beginning 2)
-                                     formals-end (match-end 2))
-                               (add-face-text-property (match-beginning 1) (match-end 1)
-                                                       'font-lock-function-name-face
-                                                       nil label))
-                             (when (eql i sig-active)
-                               ;; Processing the "active signature".
-                               (when-let ((doc-p (stringp documentation))
-                                          (match-p (string-match
-                                                    "[[:space:]]*\\([^.\r\n]+[.]?\\)"
-                                                    documentation))
-                                          (doc-match (match-string 1 documentation)))
-                                 ;; Add one-line-summary to signature line
-                                 (unless (string-prefix-p (string-trim doc-match) label)
-                                   (setq label (concat label ": "
-                                                       (xlsp-format-markup doc-match)))))
-                               (when-let ((formals-p formals-beg)
-                                          (formals (cl-subseq label formals-beg formals-end))
-                                          (param-p (fixnump param-active))
-                                          (param (aref params (min (1- (length params))
-                                                                   param-active)))
-                                          (param-label (xlsp-struct-parameter-information-label
-                                                        param)))
-                                 ;; Highlight the active one of the args.
-                                 (when-let ((beg-end
-                                             (if (stringp param-label)
-                                                 (let (case-fold-search)
-                                                   (when (string-match
-                                                          (format "\\<%s\\>"
-                                                                  (regexp-quote param-label))
-                                                          formals)
-                                                     (cons (+ formals-beg (match-beginning 0))
-                                                           (+ formals-beg (match-end 0)))))
-                                               (cons (aref param-label 0)
-                                                     (aref param-label 1)))))
-                                   (add-face-text-property
-                                    (car beg-end) (cdr beg-end)
-                                    'eldoc-highlight-function-argument
-                                    nil label))
-                                 ;; Add its doc on its own line.
-                                 (when-let ((param-doc
-                                             (xlsp-struct-parameter-information-documentation
-                                              param)))
-                                   (setq label
-                                         (concat
-                                          label "\n"
-                                          (propertize
-                                           (if (stringp param-label)
-                                               param-label
-                                             (apply #'cl-subseq label
-                                                    (append param-label nil)))
-                                           'face 'eldoc-highlight-function-argument)
-                                          ": " (xlsp-format-markup param-doc))))))
-                             label))
-                          ;; closure I*
-                          0))
+                         (let ((i* 0))
+                           (cl-function
+                            (lambda (sig
+                                     &aux
+                                     (sig-active
+                                      (xlsp-struct-signature-help-active-signature help))
+                                     (documentation
+                                      (xlsp-struct-signature-information-documentation sig))
+                                     (label
+                                      (xlsp-struct-signature-information-label sig))
+                                     (params
+                                      (xlsp-struct-signature-information-parameters sig))
+                                     (param-active
+                                      (or (xlsp-struct-signature-information-active-parameter sig)
+                                          (xlsp-struct-signature-help-active-parameter help)))
+                                     (i (prog1 i* (cl-incf i*)))
+                                     formals-beg formals-end)
+                              (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
+                                ;; Ad-hoc attempt to parse label as <name>(<args>)
+                                (setq formals-beg (match-beginning 2)
+                                      formals-end (match-end 2))
+                                (add-face-text-property (match-beginning 1) (match-end 1)
+                                                        'font-lock-function-name-face
+                                                        nil label))
+                              (when (eql i sig-active)
+                                ;; Processing the "active signature".
+                                (when-let ((doc-p (stringp documentation))
+                                           (match-p (string-match
+                                                     "[[:space:]]*\\([^.\r\n]+[.]?\\)"
+                                                     documentation))
+                                           (doc-match (match-string 1 documentation)))
+                                  ;; Add one-line-summary to signature line
+                                  (unless (string-prefix-p (string-trim doc-match) label)
+                                    (setq label (concat label ": "
+                                                        (xlsp-format-markup doc-match)))))
+                                (when-let ((formals-p formals-beg)
+                                           (formals (cl-subseq label formals-beg formals-end))
+                                           (param-p (fixnump param-active))
+                                           (param (aref params (min (1- (length params))
+                                                                    param-active)))
+                                           (param-label (xlsp-struct-parameter-information-label
+                                                         param)))
+                                  ;; Highlight the active one of the args.
+                                  (when-let ((beg-end
+                                              (if (stringp param-label)
+                                                  (let (case-fold-search)
+                                                    (when (string-match
+                                                           (format "\\<%s\\>"
+                                                                   (regexp-quote param-label))
+                                                           formals)
+                                                      (cons (+ formals-beg (match-beginning 0))
+                                                            (+ formals-beg (match-end 0)))))
+                                                (cons (aref param-label 0)
+                                                      (aref param-label 1)))))
+                                    (add-face-text-property
+                                     (car beg-end) (cdr beg-end)
+                                     'eldoc-highlight-function-argument
+                                     nil label))
+                                  ;; Add its doc on its own line.
+                                  (when-let ((param-doc
+                                              (xlsp-struct-parameter-information-documentation
+                                               param)))
+                                    (setq label
+                                          (concat
+                                           label "\n"
+                                           (propertize
+                                            (if (stringp param-label)
+                                                param-label
+                                              (apply #'cl-subseq label
+                                                     (append param-label nil)))
+                                            'face 'eldoc-highlight-function-argument)
+                                           ": " (xlsp-format-markup param-doc))))))
+                              label))))
                         (formatted (mapconcat formatify
                                               (xlsp-struct-signature-help-signatures help)
                                               "\n")))
