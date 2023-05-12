@@ -247,8 +247,8 @@ I use inode in case project directory gets renamed.")
   (with-xlsp-connection (conn-key project-dir)
       buffer
     (when-let ((ret (or (xlsp-gv-connection conn-key)
-                        (setf (xlsp-gv-connection conn-key)
-                              (xlsp--connect buffer project-dir)))))
+                        (when-let ((conn (xlsp--connect buffer project-dir)))
+                          (setf (xlsp-gv-connection conn-key) conn)))))
       (prog1 ret
         (cl-pushnew (buffer-file-name buffer) (oref ret files))))))
 
