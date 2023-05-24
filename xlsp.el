@@ -1191,6 +1191,12 @@ CANDIDATES."
                   :process process)
                (error (delete-process process)
                       (signal (car err) (cdr err))))))
+    (when (fboundp 'make-jsonrpc-thread)
+      (set-process-filter (jsonrpc--process conn)
+                          (lambda (proc json-message)
+                            (let ((conn (process-get proc 'jsonrpc-connection)))
+                              (jsonrpc-connection-receive conn json-message))))
+      (make-jsonrpc-thread (format "%s jsonrpc" name) (jsonrpc--process conn)))
     (xlsp-message "%s executing: %s" name command)
     (condition-case err
         (jsonrpc-async-request
