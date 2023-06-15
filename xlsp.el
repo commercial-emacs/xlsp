@@ -4,7 +4,7 @@
 ;; URL: https://github.com/commercial-emacs/xlsp
 ;; Version: 0.0.1pre
 ;; Keywords: languages
-;; Package-Requires: ((emacs "27.1") (company "0.9.13") (markdown-mode "2.6.1"))
+;; Package-Requires: ((emacs "27.1") (company "0.9.13") (markdown-mode "2.5"))
 
 ;;; Commentary:
 
