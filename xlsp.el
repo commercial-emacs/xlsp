@@ -315,9 +315,10 @@ I use inode in case project directory gets renamed.")
                      (apply-partially
                       (lambda (buffer*)
                         "Assume no context switch to :cumulate during :send."
-                        (with-current-buffer buffer*
-                          (funcall (xlsp-synchronize-closure) :send t)
-                          (setf (xlsp-synchronize-state-timer synchronize*) nil)))
+                        (when (buffer-live-p buffer*)
+                          (with-current-buffer buffer*
+                            (funcall (xlsp-synchronize-closure) :send t)
+                            (setf (xlsp-synchronize-state-timer synchronize*) nil))))
                       (xlsp-synchronize-state-buffer synchronize*))))))
           (when send
             (when (xlsp-synchronize-state-timer synchronize*)
