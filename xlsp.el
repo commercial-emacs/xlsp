@@ -1105,10 +1105,7 @@ CANDIDATES."
           (error (xlsp-message "xlsp-mode: %s, %s"
                                (buffer-name) (cl-second err)))))
       (xlsp-toggle-hooks nil)
-      ;; A false buffer-file-name could be asserted during
-      ;; global-xlsp-mode activation.
-      (when-let ((file-name (buffer-file-name)))
-	(xlsp-deregister-file file-name))
+      (xlsp-deregister-file (buffer-file-name))
       (unless global-eldoc-mode
         (eldoc-mode 0))
       (unless global-company-mode
@@ -1748,7 +1745,8 @@ The problem is that goes from glob to files, and I need converse."
 (define-globalized-minor-mode global-xlsp-mode
   xlsp-mode
   (lambda ()
-    (when (and (buffer-file-name)
+    (when (and (equal (file-name-nondirectory (buffer-name))
+		      (file-name-nondirectory (or (buffer-file-name) "")))
                (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
