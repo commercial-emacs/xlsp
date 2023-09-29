@@ -1745,8 +1745,8 @@ The problem is that goes from glob to files, and I need converse."
 (define-globalized-minor-mode global-xlsp-mode
   xlsp-mode
   (lambda ()
-    (when (and (equal (file-name-nondirectory (buffer-name))
-		      (file-name-nondirectory (or (buffer-file-name) "")))
+    (when (and (buffer-file-name)
+	       (not (bound-and-true-p magit-blob-mode))
                (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
