@@ -1746,7 +1746,10 @@ The problem is that goes from glob to files, and I need converse."
   xlsp-mode
   (lambda ()
     (when (and (buffer-file-name)
-	       (not (find-buffer-visiting (buffer-file-name)))
+	       ;; magit-revert-rev-file-buffer is problematic...
+	       (let ((extant (find-buffer-visiting (buffer-file-name))))
+		 (or (not extant)
+		     (not (buffer-local-value 'xlsp-mode extant))))
                (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
