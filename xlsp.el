@@ -1746,7 +1746,7 @@ The problem is that goes from glob to files, and I need converse."
   xlsp-mode
   (lambda ()
     (when (and (buffer-file-name)
-	       (not (bound-and-true-p magit-blob-mode))
+	       (not (find-buffer-visiting (buffer-file-name)))
                (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
