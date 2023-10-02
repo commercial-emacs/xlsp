@@ -1741,22 +1741,21 @@ The problem is that goes from glob to files, and I need converse."
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp)
 
-;;;###autoload
-(defsubst xlsp--avoid-spurious-docstring-error ()
-  "The activation function goes into the *Help* buffer verbatim.
-As a result, if the function contains a quote, the byte compiler complains.
-Thus this level of indirection."
-  (not (find-buffer-visiting
-	(buffer-file-name)
-	(apply-partially #'buffer-local-value 'xlsp-mode))))
+(defsubst xlsp--buffer-file-name-already-opened ()
+  "Clause for magit-revert-rev-file-buffer's false buffer-file-name.
+It has its own function since `define-globalized-minor-mode'
+would otherwise embed it verbatim in a docstring resulting in a
+byte compiler warning since the clause contains `quote'."
+  (find-buffer-visiting
+   (buffer-file-name)
+   (apply-partially #'buffer-local-value 'xlsp-mode)))
 
 ;;;###autoload
 (define-globalized-minor-mode global-xlsp-mode
   xlsp-mode
   (lambda ()
     (when (and (buffer-file-name)
-	       ;; magit-revert-rev-file-buffer is problematic...
-	       (xlsp--avoid-spurious-docstring-error)
+	       (not (xlsp--buffer-file-name-already-opened))
                (project-current)
                (alist-get major-mode xlsp-server-invocations))
       (xlsp-mode)))
