@@ -1105,7 +1105,8 @@ CANDIDATES."
           (error (xlsp-message "xlsp-mode: %s, %s"
                                (buffer-name) (cl-second err)))))
       (xlsp-toggle-hooks nil)
-      (xlsp-deregister-file (buffer-file-name))
+      (when (buffer-file-name)
+	(xlsp-deregister-file (buffer-file-name)))
       (unless global-eldoc-mode
         (eldoc-mode 0))
       (unless global-company-mode
