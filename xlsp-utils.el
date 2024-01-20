@@ -2,14 +2,14 @@
 
 (require 'cl-lib)
 (require 'url-util)
-(require 'jsonrpc)
+(require 'xlsp-rpc)
 
 (defgroup xlsp nil
   "Language Server Protocol."
   :prefix "xlsp-"
   :group 'applications)
 
-(defclass xlsp-connection (jsonrpc-process-connection)
+(defclass xlsp-connection (xlsp-rpc-process-connection)
   ((ready-p :initform nil :type boolean :documentation "Handshake completed.")
    (capabilities :initform nil)
    (server-info :initform nil)

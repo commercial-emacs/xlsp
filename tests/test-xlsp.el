@@ -79,26 +79,26 @@ his fooness")
   (cl-remf body :timeout)
   `(let* ((conn (xlsp-connection-get (current-buffer)))
           (beg (when conn
-                 (with-current-buffer (jsonrpc-events-buffer conn)
+                 (with-current-buffer (xlsp-rpc-events-buffer conn)
                    (point-max))))
           (steps ',steps)
           (closure (test-xlsp-script beg (gv-ref steps)))
           (xlsp-advise-logging
            (lambda (conn &rest _args)
-             (with-current-buffer (jsonrpc-events-buffer conn)
+             (with-current-buffer (xlsp-rpc-events-buffer conn)
                (funcall closure)))))
      (unwind-protect
          (progn
-           (add-function :after (symbol-function 'jsonrpc--log-event)
+           (add-function :after (symbol-function 'xlsp-rpc--log-event)
                          xlsp-advise-logging
                          `((name . ,(xlsp-advise-tag xlsp-advise-logging))))
            (with-timeout
-            (,timeout)
-            ,@body
-            (while steps
-              (accept-process-output nil 0.1)))
+               (,timeout)
+             ,@body
+             (while steps
+               (accept-process-output nil 0.1)))
            (should-not steps))
-       (remove-function (symbol-function 'jsonrpc--log-event)
+       (remove-function (symbol-function 'xlsp-rpc--log-event)
                         xlsp-advise-logging))))
 
 (ert-deftest test-xlsp-test-basic ()

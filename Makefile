@@ -24,7 +24,7 @@ schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.js
           entry                                                                \
         (unless (memq what (quote (metaData)))                                 \
           (with-temp-file (format \"_%s.el\" (xlsp-hyphenate (symbol-name what))) \
-            (princ \";; -*- lisp-data -*-\n\n\" (current-buffer))                \
+            (princ \";; -*- lexical-binding: t -*-\n\n\" (current-buffer)) \
             (pp schema (current-buffer))))))))"
 
 README.rst: README.in.rst xlsp.el

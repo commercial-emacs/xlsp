@@ -54,6 +54,7 @@
 (require 'xlsp-company)
 (require 'xlsp-server)
 (require 'xlsp-xref)
+(require 'xlsp-rpc)
 
 (eval-when-compile
   (when (< emacs-major-version 28)
@@ -145,21 +146,21 @@ When undo is disabled this behaves like `progn'."
   (cl-call-next-method)
   (let ((xlsp-advise-sentinel
          (lambda (f proc change &rest args)
-           "jsonrpc--message should not usurp echo area."
-           (cl-letf (((symbol-function 'jsonrpc--message) #'ignore))
+           "xlsp-rpc--message should not usurp echo area."
+           (cl-letf (((symbol-function 'xlsp-rpc--message) #'ignore))
              ;; inhibit-message fixed in 60df437 in Commercial
              (prog1 (apply f proc change args)
-               (when-let ((conn (process-get proc 'jsonrpc-connection))
+               (when-let ((conn (process-get proc 'xlsp-rpc-connection))
                           (died-p (not (process-live-p proc))))
                  (display-warning
                   'xlsp
                   (format "%s, %s" (process-name proc) change)
                   :warning)))))))
-    (add-function :around (process-sentinel (jsonrpc--process conn))
+    (add-function :around (process-sentinel (xlsp-rpc--process conn))
                   xlsp-advise-sentinel
                   `((name . ,(xlsp-advise-tag xlsp-advise-sentinel)))))
   (unless (xlsp--test-p)
-    (add-function :around (process-filter (jsonrpc--process conn))
+    (add-function :around (process-filter (xlsp-rpc--process conn))
                   (lambda (f &rest args)
                     "Brutal pp-buffer down-list and indent."
                     (cl-letf (((symbol-function 'pp-buffer) #'ignore))
@@ -343,7 +344,7 @@ I use inode in case project directory gets renamed.")
                                           (buffer-substring-no-properties
                                            (point-min) (point-max))))))
                                  (list (xlsp-literal :text full-text)))))))
-              (jsonrpc-notify     ; notifications are fire-and-forget
+              (xlsp-rpc-notify     ; notifications are fire-and-forget
                conn
                xlsp-notification-text-document/did-change
                (xlsp-jsonify
@@ -359,7 +360,7 @@ I use inode in case project directory gets renamed.")
                    ;; Events sent; clear for next batch.
                    (setf (xlsp-synchronize-state-events synchronize*) nil)))))))
           (when save
-            (jsonrpc-notify
+            (xlsp-rpc-notify
              (xlsp-connection-get (xlsp-synchronize-state-buffer synchronize*))
              xlsp-notification-text-document/did-save
              (xlsp-jsonify
@@ -386,8 +387,8 @@ I use inode in case project directory gets renamed.")
        (dolist (b (seq-keep #'find-buffer-visiting (xlsp-conn-files conn)))
          (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t))
        (funcall (function ,(if (memq :success-fn args)
-                               'jsonrpc-async-request
-                             'jsonrpc-request))
+                               'xlsp-rpc-async-request
+                             'xlsp-rpc-request))
                 conn ,@args))))
 
 (defsubst xlsp-new-text (item)
@@ -641,7 +642,7 @@ retrofits current logic to v27."
 (cl-defun xlsp-do-request-completion (buffer pos callback
                                       &key trigger-char sync)
   "Note SYNC argument and qq/sync/ in xlsp-sync-then-request are distinct.
-The first says whether to jsonrpc-async-request or jsonrpc-request.
+The first says whether to xlsp-rpc-async-request or xlsp-rpc-request.
 The second refers to LSP document synchronization."
   (when-let ((conn (xlsp-connection-get buffer))
              (relevant-p (with-current-buffer buffer
@@ -928,7 +929,7 @@ CANDIDATES."
                    for i below (length filtered-items)
                    for pre = (nth i filtered-items)
                    unless (xlsp-struct-completion-item-detail pre)
-                   do (jsonrpc-async-request
+                   do (xlsp-rpc-async-request
                        conn xlsp-request-completion-item/resolve
                        (xlsp-jsonify pre)
                        :success-fn
@@ -1086,7 +1087,7 @@ CANDIDATES."
                       company-lighter (concat " " company-lighter-base))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
           (when-let ((conn (xlsp-connection-get (current-buffer))))
-            (if (jsonrpc-connection-ready-p conn :handshook)
+            (if (xlsp-rpc-connection-ready-p conn :handshook)
                 (progn
                   (xlsp-toggle-hooks conn)
                   (when (xlsp-sync-p
@@ -1132,23 +1133,23 @@ CANDIDATES."
 
   (let ((conn (xlsp-gv-connection conn-key)))
     (when (and conn
-               (jsonrpc-running-p conn)
-               (buffer-live-p (jsonrpc--events-buffer conn))
-               (buffer-live-p (process-buffer (jsonrpc--process conn))))
-      (jsonrpc-async-request conn xlsp-request-shutdown nil)
+               (xlsp-rpc-running-p conn)
+               (buffer-live-p (xlsp-rpc--events-buffer conn))
+               (buffer-live-p (process-buffer (xlsp-rpc--process conn))))
+      (xlsp-rpc-async-request conn xlsp-request-shutdown nil)
       ;; eglot got this right by just firing off the exit notification
       ;; sight unseen.  Ideally it'd issue from the success-fn callback
-      ;; of xlsp-request-shutdown, but jsonrpc--process-filter
+      ;; of xlsp-request-shutdown, but xlsp-rpc--process-filter
       ;; triggers that callback, which could kill the connection,
-      ;; and jsonrpc--process-filter lives in connection's buffer.
+      ;; and xlsp-rpc--process-filter lives in connection's buffer.
       ;; Upshot: Text from arbitrary buffers gets delete-region'ed!!!).
       (cl-letf (((symbol-function 'display-warning) #'ignore))
-        (jsonrpc-notify conn xlsp-notification-exit nil)))
+        (xlsp-rpc-notify conn xlsp-notification-exit nil)))
     ;; Unfortunately this cannot wait because user could
     ;; toggle xlsp-mode very quickly.
     (cl-letf (((symbol-function 'display-warning) #'ignore)
-              ((symbol-function 'jsonrpc--message) #'ignore))
-      (when conn (jsonrpc-shutdown conn :cleanup)))
+              ((symbol-function 'xlsp-rpc--message) #'ignore))
+      (when conn (xlsp-rpc-shutdown conn :cleanup)))
     (setq xlsp--connections
           (assoc-delete-all conn-key xlsp--connections))))
 
@@ -1172,7 +1173,7 @@ CANDIDATES."
                  :connection-type 'pipe
                  :coding 'utf-8-emacs-unix
                  :noquery t
-                 ;; jsonrpc-process-connection initialize-instance
+                 ;; xlsp-rpc-process-connection initialize-instance
                  ;; emplaces the output buffer far too late.  Do it now.
                  :buffer (get-buffer-create (format " *%s output*" name))
                  :stderr (get-buffer-create (format "*%s stderr*" name))
@@ -1185,7 +1186,7 @@ CANDIDATES."
                   :notification-dispatcher #'xlsp-handle-notification
                   :request-dispatcher #'xlsp-handle-request
                   ;; Should process die exogenously,
-                  ;; a sentinel in jsonrpc calls :on-shutdown
+                  ;; a sentinel in xlsp-rpc calls :on-shutdown
                   :on-shutdown (with-xlsp-connection (conn-key project-dir)
                                    buffer
                                  (lambda (_conn)
@@ -1195,7 +1196,7 @@ CANDIDATES."
                       (signal (car err) (cdr err))))))
     (xlsp-message "%s executing: %s" name command)
     (condition-case err
-        (jsonrpc-async-request
+        (xlsp-rpc-async-request
          conn
          xlsp-request-initialize
          (xlsp-jsonify initialize-params)
@@ -1216,8 +1217,8 @@ CANDIDATES."
                 (condition-case err
                     (progn
                       ;; Ack
-                      (jsonrpc-notify conn xlsp-notification-initialized
-                                      (xlsp-jsonify (make-xlsp-struct-initialized-params)))
+                      (xlsp-rpc-notify conn xlsp-notification-initialized
+                                       (xlsp-jsonify (make-xlsp-struct-initialized-params)))
 
                       ;; Register project files
                       (with-xlsp-connection (conn-key project-dir)
@@ -1236,7 +1237,7 @@ CANDIDATES."
 
                       ;; Register workspace-specific config, if any.
                       ;; Amazingly, pyright won't budge without this.
-                      (jsonrpc-notify
+                      (xlsp-rpc-notify
                        conn xlsp-notification-workspace/did-change-configuration
                        (xlsp-jsonify
                         (make-xlsp-struct-did-change-configuration-params
@@ -1258,7 +1259,7 @@ CANDIDATES."
       (error
        ;; cleaning up process only happens when forming
        ;; the request had errors, not when callbacks do.
-       (jsonrpc-shutdown conn :cleanup)
+       (xlsp-rpc-shutdown conn :cleanup)
        (setq conn nil)
        (signal (car err) (cdr err))))
     conn))
@@ -1375,7 +1376,7 @@ CANDIDATES."
       xlsp-did-open-text-document
       (apply-partially
        (lambda (buffer*)
-         (jsonrpc-notify
+         (xlsp-rpc-notify
           (xlsp-connection-get buffer*)
           xlsp-notification-text-document/did-open
           (xlsp-jsonify
@@ -1397,7 +1398,7 @@ CANDIDATES."
       xlsp-did-close-text-document
       (apply-partially
        (lambda (buffer*)
-         (jsonrpc-notify
+         (xlsp-rpc-notify
           (xlsp-connection-get buffer*)
           xlsp-notification-text-document/did-close
           (xlsp-jsonify
@@ -1565,11 +1566,10 @@ CANDIDATES."
                  finally (kill-local-variable 'xlsp-hooks-alist)))))
   "Ngl, this is ridonk.")
 
-(cl-defmethod jsonrpc-connection-ready-p ((conn xlsp-connection) _what)
+(cl-defmethod xlsp-rpc-connection-ready-p ((conn xlsp-connection) _what)
   (and (cl-call-next-method) (oref conn ready-p)))
 
-(cl-defmethod jsonrpc--events-buffer ((conn xlsp-connection))
-  "I don't make the rules of jsonrpc.el, but I should."
+(cl-defmethod xlsp-rpc--events-buffer ((conn xlsp-connection))
   (let ((extant (and (slot-boundp conn '-events-buffer)
                      (eieio-oref conn '-events-buffer))))
     (if (buffer-live-p extant)
