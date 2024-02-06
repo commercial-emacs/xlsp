@@ -158,13 +158,7 @@ When undo is disabled this behaves like `progn'."
                   :warning)))))))
     (add-function :around (process-sentinel (xlsp-rpc--process conn))
                   xlsp-advise-sentinel
-                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel)))))
-  (unless (xlsp--test-p)
-    (add-function :around (process-filter (xlsp-rpc--process conn))
-                  (lambda (f &rest args)
-                    "Brutal pp-buffer down-list and indent."
-                    (cl-letf (((symbol-function 'pp-buffer) #'ignore))
-                      (apply f args))))))
+                  `((name . ,(xlsp-advise-tag xlsp-advise-sentinel))))))
 
 (defvar xlsp--connections nil
   "Global alist of ((MODE . INODE-NUM) . XLSP-CONNECTION).

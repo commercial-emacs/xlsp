@@ -47,6 +47,8 @@
 ;;; Public API
 ;;;
 
+(declare-function xlsp--test-p "xlsp")
+
 (defclass xlsp-rpc-connection ()
   ((name
     :accessor xlsp-rpc-name
@@ -703,9 +705,10 @@ originated."
                                    (if id (format " (id:%s)" id) "")
                                    (if error " ERROR" "")
                                    (current-time-string)
-				   (let ((lisp-indent-function ;bug#68072
-                                          #'lisp-indent-function))
-                                     (pp-to-string message)))))
+				   (funcall (if (xlsp--test-p)
+						#'pp-to-string
+					      #'identity)
+					    message))))
                   (when error
                     (setq msg (propertize msg 'face 'error)))
                   (insert-before-markers msg))

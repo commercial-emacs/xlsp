@@ -46,7 +46,7 @@ compile: cask
 	cask emacs -batch -L . -L tests \
           --eval "(setq byte-compile-error-on-warn t)" \
 	  -f batch-byte-compile $$(cask files) tests/test-*.el; \
-	  (ret=$$? ; rm *.elc tests/*.elc && exit $$ret)
+	  (ret=$$? ; rm -f *.elc tests/*.elc && exit $$ret)
 
 .PHONY: test
 test: compile
