@@ -690,37 +690,36 @@ originated."
       (with-current-buffer (xlsp-rpc-events-buffer connection)
         (cl-destructuring-bind (&key method id error &allow-other-keys) message
           (let* ((inhibit-read-only t)
-                 (subtype (cond ((and method id)       'request)
-                                (method                'notification)
-                                (id                    'reply)
-                                (t                     'message)))
-                 (type
-                  (concat (format "%s" (or type 'internal))
-                          (if type
-                              (format "-%s" subtype)))))
+                 (subtype (cond ((and method id) 'request)
+                                (method 'notification)
+                                (id 'reply)
+                                (t 'message)))
+                 (type (concat (format "%s" (or type 'internal))
+                               (when type
+				 (format "-%s" subtype)))))
             (goto-char (point-max))
-            (prog1
-                (let ((msg (format "[%s]%s%s %s:\n%s"
-                                   type
-                                   (if id (format " (id:%s)" id) "")
-                                   (if error " ERROR" "")
-                                   (current-time-string)
-				   (funcall (if (xlsp--test-p)
-						#'pp-to-string
-					      #'identity)
-					    message))))
-                  (when error
-                    (setq msg (propertize msg 'face 'error)))
-                  (insert-before-markers msg))
+            (prog1 (let ((msg (format "[%s]%s%s %s:\n%s"
+                                      type
+                                      (if id (format " (id:%s)" id) "")
+                                      (if error " ERROR" "")
+                                      (current-time-string)
+				      (funcall (if (xlsp--test-p)
+						   #'pp-to-string
+						 #'identity)
+					       message))))
+                     (when error
+                       (setq msg (propertize msg 'face 'error)))
+                     (insert-before-markers msg))
               ;; Trim the buffer if it's too large
               (when max
                 (save-excursion
                   (goto-char (point-min))
                   (while (> (buffer-size) max)
-                    (delete-region (point) (progn (forward-line 1)
-                                                  (forward-sexp 1)
-                                                  (forward-line 2)
-                                                  (point)))))))))))))
+                    (ignore-errors
+		      (delete-region (point) (progn (forward-line 1)
+						    (forward-sexp 1)
+						    (forward-line 2)
+						    (point))))))))))))))
 
 (defun xlsp-rpc--forwarding-buffer (name prefix conn)
   "Helper for `xlsp-rpc-process-connection' helpers.
