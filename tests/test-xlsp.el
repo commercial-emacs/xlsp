@@ -153,7 +153,9 @@ void main (void) {
         (ert-simulate-command '(search-forward "main"))
         ;; Brutal: coerce eldoc-display-message-p to true
         (setq this-command nil
-              last-command (aref eldoc-message-commands 0))
+              last-command (if (obarrayp eldoc-message-commands)
+			       (car (obarray-map #'identity eldoc-message-commands))
+			     (aref eldoc-message-commands 0)))
         (ert-run-idle-timers))))
 
     (should-error ; eldoc-cache forestalls another hover request
