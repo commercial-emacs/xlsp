@@ -711,15 +711,9 @@ originated."
                        (setq msg (propertize msg 'face 'error)))
                      (insert-before-markers msg))
               ;; Trim the buffer if it's too large
-              (when max
+              (when (and max (> (buffer-size) max))
                 (save-excursion
-                  (goto-char (point-min))
-                  (while (> (buffer-size) max)
-                    (ignore-errors
-		      (delete-region (point) (progn (forward-line 1)
-						    (forward-sexp 1)
-						    (forward-line 2)
-						    (point))))))))))))))
+                  (delete-region (point-min) (/ max 3)))))))))))
 
 (defun xlsp-rpc--forwarding-buffer (name prefix conn)
   "Helper for `xlsp-rpc-process-connection' helpers.
