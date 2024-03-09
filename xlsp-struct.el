@@ -225,6 +225,12 @@
 (defun xlsp-array (&rest args)
   (apply #'vector args))
 
+(defun xlsp--struct-p (obj-type)
+  "Monnier made me do this."
+  (let ((class (get obj-type 'cl--class))
+	(test-fun (symbol-function 'built-in-class-p)))
+    (and class (or (not test-fun) (not (funcall test-fun class))))))
+
 (defun xlsp-jsonify (obj)
   "Go from xlsp-struct to json-object-type (plist)."
   (cond
@@ -232,7 +238,7 @@
     obj)
    ((vectorp obj)
     (apply json-array-type (seq-map #'xlsp-jsonify obj)))
-   ((not (get (type-of obj) 'cl--class))
+   ((not (xlsp--struct-p (type-of obj)))
     obj)
    (t
     (let* ((json-object-type 'plist)
@@ -250,7 +256,7 @@
 (defun xlsp-unjsonify (struct-type json)
   "Go from json-object-type (plist) to xlsp-struct.
 Brutal without byte compilation."
-  (if (not (get struct-type 'cl--class))
+  (if (not (xlsp--struct-p struct-type))
       (unless (eq json-false json)
         json)
     (let ((json-object-type 'plist)
@@ -279,7 +285,7 @@ Brutal without byte compilation."
                                          (xlsp-unjsonify
                                           (seq-find
                                            (lambda (or-type)
-                                             (not (get or-type 'cl--class)))
+                                             (not (xlsp--struct-p or-type)))
                                            type)
                                           value))
                                         (t
@@ -302,7 +308,7 @@ Brutal without byte compilation."
                                                         (cl-remove-if-not #'cdr (cl-struct-slot-info or-type))))))
                                            (cl-remove-if-not
                                             (lambda (or-type)
-                                              (get or-type 'cl--class))
+					      (xlsp--struct-p or-type))
                                             type))
                                           (xlsp-unjsonify (car type) value)))))
                                  (_ (xlsp-unjsonify type value)))))))))

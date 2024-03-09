@@ -1189,7 +1189,7 @@ CANDIDATES."
                (error (delete-process process)
                       (signal (car err) (cdr err))))))
     (xlsp-message "%s executing: %s" name command)
-    (condition-case err
+    (condition-case-unless-debug err
         (xlsp-rpc-async-request
          conn
          xlsp-request-initialize
