@@ -7,30 +7,22 @@
   (defconst xlsp-requests (with-temp-buffer
                             (save-excursion
 			      (insert-file-contents
-			       (expand-file-name
-				"_requests.el"
-				(file-name-directory (or load-file-name ".")))))
+			       (locate-library "_requests.el" :nosuffix)))
 			    (read (current-buffer))))
   (defconst xlsp-notifications (with-temp-buffer
                                  (save-excursion
 				   (insert-file-contents
-				    (expand-file-name
-				     "_notifications.el"
-                                     (file-name-directory (or load-file-name ".")))))
+				    (locate-library "_notifications.el" :nosuffix)))
                                  (read (current-buffer))))
   (defconst xlsp-structures (with-temp-buffer
                               (save-excursion
 				(insert-file-contents
-				 (expand-file-name
-				  "_structures.el"
-                                  (file-name-directory (or load-file-name ".")))))
+				 (locate-library "_structures.el" :nosuffix)))
 			      (read (current-buffer))))
   (defconst xlsp-enumerations (with-temp-buffer
 				(save-excursion
 				  (insert-file-contents
-				   (expand-file-name
-				    "_enumerations.el"
-                                    (file-name-directory (or load-file-name ".")))))
+				   (locate-library "_enumerations.el" :nosuffix)))
 				(read (current-buffer))))
 
   (defun xlsp-structure (alist)
