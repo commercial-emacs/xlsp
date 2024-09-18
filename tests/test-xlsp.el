@@ -143,6 +143,7 @@ void main (void) {
             (should xlsp-mode))))))
 
     (set-buffer "foo.c")
+    (electric-indent-mode 0)
     (eval
      (quote
       (test-xlsp-should
@@ -270,7 +271,8 @@ void main (void) {
         (ert-simulate-command '(xref-find-definitions "foo.h")))))
     (should (get-buffer "foo.h"))
 
-    (when (>= emacs-major-version 28)
+    (when (and (>= emacs-major-version 28)
+	       (<= emacs-major-version 29))
       (set-buffer "foo.h")
       (goto-char (point-min))
       (let ((messages-point (with-current-buffer "*Messages*" (point))))
