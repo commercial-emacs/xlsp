@@ -94,7 +94,6 @@
                                                'default-directory b))
                    when (string-prefix-p root dd)
                    collect b)))))
-  (load "subr")
   (unless (macrop #'with-undo-amalgamate)
     (defmacro with-undo-amalgamate (&rest body)
       "Like `progn' but perform BODY with amalgamated undo barriers.
