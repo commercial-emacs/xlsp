@@ -103,8 +103,8 @@ This allows multiple operations to be undone in a single step.
 When undo is disabled this behaves like `progn'."
       (declare (indent 0) (debug t))
       (let ((handle (make-symbol "--change-group-handle--"))
-	    (undo-strong-limit (when (boundp 'undo-strong-limit)
-				 (list '(undo-strong-limit most-positive-fixnum)))))
+	    (deprecated (when (boundp 'undo-strong-limit)
+			  (list '(undo-strong-limit most-positive-fixnum)))))
         `(let ((,handle (prepare-change-group))
                ;; Don't truncate any undo data in the middle of this,
                ;; otherwise Emacs might truncate part of the resulting
@@ -112,7 +112,7 @@ When undo is disabled this behaves like `progn'."
                ;; undo-boundaries were never added in the first place.
                (undo-outer-limit nil)
                (undo-limit most-positive-fixnum)
-               ,@undo-strong-limit)
+               ,@deprecated)
            (unwind-protect
                (progn
                  (activate-change-group ,handle)
