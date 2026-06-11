@@ -24,25 +24,25 @@ jobs:
         emacs_version: [27.2, 28.2, 29.2, 30.2]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v6
 
     - uses: purcell/setup-emacs@master
       with:
         version: ${{ matrix.emacs_version }}
 
-    - uses: actions/cache@v2
+    - uses: actions/cache@v5
       id: cache-cask-packages
       with:
         path: .cask
         key: cache-cask-packages-000
 
-    - uses: actions/cache@v2
+    - uses: actions/cache@v5
       id: cache-local-bin
       with:
         path: $HOME/.local/bin
         key: cache-local-bin-001
 
-    - uses: actions/cache@v2
+    - uses: actions/cache@v5
       id: cache-cask-executable
       with:
         path: ~/.cask
