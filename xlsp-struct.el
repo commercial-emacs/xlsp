@@ -75,7 +75,7 @@
                            (seq-map
                             (lambda (parent)
                               (and (equal "reference" (alist-get 'kind parent))
-                                   (when-let ((name (alist-get 'name parent)))
+                                   (when-let* ((name (alist-get 'name parent)))
                                      (unless (member name seen)
                                        name))))
                             parents)
@@ -123,14 +123,14 @@
      (let-alist entry
        (eval
         `(cl-defstruct (,(intern (xlsp-structure entry))
-                        ,@(when-let ((extends .extends))
+                        ,@(when-let* ((extends .extends))
                             `((:include
                                ,(xlsp--bail (xlsp-structure-type (aref extends 0)))))))
            ,@(when (stringp .documentation) (list .documentation))
            ,@(cl-mapcan #'identity
                         (seq-map
                          (lambda (parent)
-                           (when-let ((type (intern-soft (xlsp-structure parent))))
+                           (when-let* ((type (intern-soft (xlsp-structure parent))))
                              (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
                          (seq-drop .extends 1)))
            ,@(seq-map
@@ -238,9 +238,9 @@
            (type (type-of obj))
            (slots (cl-remove-if-not #'cdr (cl-struct-slot-info type))))
       (dolist (slot (mapcar (lambda (x) (symbol-name (car x))) slots))
-        (when-let ((getter (intern-soft (concat (symbol-name type) "-" slot)))
-                   (getter-p (fboundp getter))
-                   (value (funcall getter obj)))
+        (when-let* ((getter (intern-soft (concat (symbol-name type) "-" slot)))
+                    (getter-p (fboundp getter))
+                    (value (funcall getter obj)))
           (setq result (json-add-to-object
                         result (xlsp-unhyphenate slot t) (xlsp-jsonify value)))))
       (or result xlsp-struct-empty)))))
@@ -257,10 +257,10 @@ Brutal without byte compilation."
       (dolist (slot slots)
         (cl-destructuring-bind (sym _ &key type &allow-other-keys)
             slot
-          (when-let ((our-kw (intern (concat ":" (symbol-name sym))))
-                     (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
-                                                                     :as-slot))))
-                     (value (ignore-errors (plist-get json their-kw))))
+          (when-let* ((our-kw (intern (concat ":" (symbol-name sym))))
+                      (their-kw (intern (concat ":" (xlsp-unhyphenate (symbol-name sym)
+                                                                      :as-slot))))
+                      (value (ignore-errors (plist-get json their-kw))))
             (setq arguments
                   (nconc arguments
                          (list our-kw

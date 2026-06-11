@@ -136,7 +136,7 @@ immediately."
 ;;;
 (cl-defmacro xlsp-rpc-lambda (cl-lambda-list &body body)
   (declare (indent 1) (debug (sexp &rest form)))
-  (let ((e (cl-gensym "xlsp-rpc-lambda-elem")))
+  (let ((e (gensym "xlsp-rpc-lambda-elem")))
     `(lambda (,e) (apply (cl-function (lambda ,cl-lambda-list ,@body)) ,e))))
 
 (defun xlsp-rpc-events-buffer (connection)
@@ -362,15 +362,15 @@ Needs to be rewritten."
       (let ((inhibit-read-only t))
         (erase-buffer))
       (set-marker (process-mark (xlsp-rpc--process conn)) (point-min))))
-  (when-let ((stderr-buffer
-              (get-buffer (format "*%s stderr*" (xlsp-rpc-name conn))))
-             (invisible-name (concat " " (buffer-name stderr-buffer))))
+  (when-let* ((stderr-buffer
+               (get-buffer (format "*%s stderr*" (xlsp-rpc-name conn))))
+              (invisible-name (concat " " (buffer-name stderr-buffer))))
     (with-current-buffer stderr-buffer
       (special-mode)
       (let ((inhibit-read-only t))
         (erase-buffer)))
     (process-put (xlsp-rpc--process conn) 'xlsp-rpc-stderr stderr-buffer)
-    (when-let ((detritus (get-buffer invisible-name)))
+    (when-let* ((detritus (get-buffer invisible-name)))
       (let (kill-buffer-query-functions)
         (kill-buffer detritus)))
     (with-current-buffer stderr-buffer
@@ -494,7 +494,7 @@ With optional CLEANUP, kill any associated buffers."
 
 (defun xlsp-rpc--call-deferred (connection)
   "Call CONNECTION's deferred actions, who may again defer themselves."
-  (when-let ((actions (hash-table-values (xlsp-rpc--deferred-actions connection))))
+  (when-let* ((actions (hash-table-values (xlsp-rpc--deferred-actions connection))))
     (xlsp-rpc--debug connection `(:maybe-run-deferred
                                   ,(mapcar (apply-partially #'nth 2) actions)))
     (mapc #'funcall (mapcar #'car actions))))
@@ -521,7 +521,7 @@ With optional CLEANUP, kill any associated buffers."
                    (xlsp-rpc--request-continuations connection))
         (xlsp-rpc--message "Server exited with status %s" (process-exit-status proc))
         (delete-process proc)
-        (when-let (p (slot-value connection '-autoport-inferior)) (delete-process p))
+        (when-let* ((p (slot-value connection '-autoport-inferior))) (delete-process p))
         (funcall (xlsp-rpc--on-shutdown connection) connection)))))
 
 (defun xlsp-rpc--process-filter (proc string)
@@ -558,13 +558,13 @@ With optional CLEANUP, kill any associated buffers."
                 (unwind-protect
                     (save-restriction
                       (narrow-to-region (point) message-end)
-                      (when-let ((json-message
-                                  (condition-case err
-                                      (xlsp-rpc--json-read)
-                                    (error
-                                     (prog1 nil
-                                       (xlsp-rpc--warn "Invalid JSON: %s %s"
-                                                       (cdr err) (buffer-string)))))))
+                      (when-let* ((json-message
+                                   (condition-case err
+                                       (xlsp-rpc--json-read)
+                                     (error
+                                      (prog1 nil
+					(xlsp-rpc--warn "Invalid JSON: %s %s"
+							(cdr err) (buffer-string)))))))
                         (with-temp-buffer
                           ;; Calls success-fn and error-fn
                           ;; of xlsp-rpc-async-request, which
@@ -579,13 +579,13 @@ With optional CLEANUP, kill any associated buffers."
                       (setf (xlsp-rpc--expected-bytes connection) nil))))))))))))
 
 (cl-defun xlsp-rpc--async-request (connection method params
-					      &rest args
-					      &key success-fn error-fn timeout-fn deferred
-					      (timeout xlsp-rpc-default-request-timeout)
-					      &aux (orig-pt (point))
-					      (orig-buffer (current-buffer))
-					      (deferred-key (when deferred
-							      `(,deferred ,orig-buffer))))
+				   &rest args
+				   &key success-fn error-fn timeout-fn deferred
+				   (timeout xlsp-rpc-default-request-timeout)
+				   &aux (orig-pt (point))
+				   (orig-buffer (current-buffer))
+				   (deferred-key (when deferred
+						   `(,deferred ,orig-buffer))))
   "Returns a list (ID TIMER)."
   (let (id timer)
     (when deferred

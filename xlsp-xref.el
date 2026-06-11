@@ -39,44 +39,44 @@ Failing that we want the one before, or failing that, after."
 
 (defun xlsp-xref--retrieve-locations (requester identifier)
   (save-excursion
-    (when-let ((where (xlsp-xref-re-ceiling identifier))
-               (locations (funcall requester (current-buffer) (goto-char where)))
-               (location-type (type-of (car locations)))
-               (uri-getter (if (eq location-type 'xlsp-struct-location-link)
-                               #'xlsp-struct-location-link-target-uri
-                             #'xlsp-struct-location-uri))
-               (range-getter (if (eq location-type 'xlsp-struct-location-link)
-                                 #'xlsp-struct-location-link-target-range
-                               #'xlsp-struct-location-range)))
+    (when-let* ((where (xlsp-xref-re-ceiling identifier))
+		(locations (funcall requester (current-buffer) (goto-char where)))
+		(location-type (type-of (car locations)))
+		(uri-getter (if (eq location-type 'xlsp-struct-location-link)
+				#'xlsp-struct-location-link-target-uri
+                              #'xlsp-struct-location-uri))
+		(range-getter (if (eq location-type 'xlsp-struct-location-link)
+                                  #'xlsp-struct-location-link-target-range
+				#'xlsp-struct-location-range)))
       (seq-keep
        (lambda (location)
-         (when-let ((file (xlsp-unurify (funcall uri-getter location)))
-                    (range (funcall range-getter location))
-                    (make-match
-                     (lambda (buffer)
-                       (with-current-buffer buffer
-                         ;; clangd has produced locations
-                         ;; that did not reflect dutifully reported
-                         ;; didChange notifications.  clangd
-                         ;; only got it right after a didSave.  Ergo,
-                         ;; the if-let.
-                         (if-let ((beg (xlsp-our-pos
-                                        (current-buffer)
-                                        (xlsp-struct-range-start range)))
-                                  (end (xlsp-our-pos
-                                        (current-buffer)
-                                        (xlsp-struct-range-end range))))
-                             (progn
-                               (goto-char beg)
-                               (xref-make-match
-                                identifier
-                                (xref-make-file-location file (line-number-at-pos) (current-column))
-                                (- end beg)))
-                           (prog1 nil
-                             (xlsp-message
-                              "xref-backend-definitions: No such range %S in %s"
-                              range file)))))))
-           (if-let ((buffer (find-buffer-visiting file)))
+         (when-let* ((file (xlsp-unurify (funcall uri-getter location)))
+                     (range (funcall range-getter location))
+                     (make-match
+                      (lambda (buffer)
+			(with-current-buffer buffer
+                          ;; clangd has produced locations
+                          ;; that did not reflect dutifully reported
+                          ;; didChange notifications.  clangd
+                          ;; only got it right after a didSave.  Ergo,
+                          ;; the if-let.
+                          (if-let* ((beg (xlsp-our-pos
+                                          (current-buffer)
+                                          (xlsp-struct-range-start range)))
+                                    (end (xlsp-our-pos
+                                          (current-buffer)
+                                          (xlsp-struct-range-end range))))
+                              (progn
+				(goto-char beg)
+				(xref-make-match
+                                 identifier
+                                 (xref-make-file-location file (line-number-at-pos) (current-column))
+                                 (- end beg)))
+                            (prog1 nil
+                              (xlsp-message
+                               "xref-backend-definitions: No such range %S in %s"
+                               range file)))))))
+           (if-let* ((buffer (find-buffer-visiting file)))
                ;; Else case won't have unsaved changes to FILE
                (funcall make-match buffer)
              (when (file-readable-p file)
@@ -111,9 +111,9 @@ Avoid seeing the metadata/category/overrides/styles fiasco in minibuffer.el."
         (unless (string-prefix-p prefix* prefix)
           ;; Most servers would balk at empty string query,
           ;; so don't store null result for that degenerate case.
-          (when-let ((matches
-                      (mapcar #'xlsp-struct-workspace-symbol-name
-                              (xlsp-do-request-workspace-symbols buffer* prefix))))
+          (when-let* ((matches
+                       (mapcar #'xlsp-struct-workspace-symbol-name
+                               (xlsp-do-request-workspace-symbols buffer* prefix))))
             (setcar state* prefix)
             (setcdr state* matches)
             (setf prefix* (car state*)

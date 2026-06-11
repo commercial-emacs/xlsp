@@ -7,6 +7,7 @@
 (require 'ert-x)
 (require 'xlsp)
 (require 'log-edit)
+(require 'vc)
 (require 'vc-git)
 
 (cl-defmacro test-xlsp-mock-repo ((&rest files) &body body)
@@ -37,22 +38,22 @@ his fooness")
        (goto-char (point-max))
        ;; "[%s]%s%s %s:\n%s"
        (save-match-data
-         (when-let ((step (car (gv-deref (plist-get state* :queue))))
-                    (step-label (car step))
-                    (step-plist (cdr step))
-                    (match-p (re-search-backward
-                              (concat
-                               "^\\[?\\([^]( ]+\\)\\]? "
-                               "\\((id:\\s-*\\([0-9]+\\))\\)?"
-                               ".+ [0-9]+:$")
-                              beg t))
-                    (what (match-string 1))
-                    (id (if (match-string 3)
-                            (string-to-number (match-string 3))
-                          :nonce))
-                    (message (progn
-                               (forward-line 1)
-                               (read (current-buffer)))))
+         (when-let* ((step (car (gv-deref (plist-get state* :queue))))
+                     (step-label (car step))
+                     (step-plist (cdr step))
+                     (match-p (re-search-backward
+                               (concat
+				"^\\[?\\([^]( ]+\\)\\]? "
+				"\\((id:\\s-*\\([0-9]+\\))\\)?"
+				".+ [0-9]+:$")
+                               beg t))
+                     (what (match-string 1))
+                     (id (if (match-string 3)
+                             (string-to-number (match-string 3))
+                           :nonce))
+                     (message (progn
+				(forward-line 1)
+				(read (current-buffer)))))
            (when (and (equal what (plist-get step-plist :what))
                       (cond ((plist-get step-plist :method)
                              (equal (symbol-name

@@ -34,11 +34,11 @@
     (lambda (item)
       (let ((scope-uri (xlsp-struct-configuration-item-scope-uri item))
             (section (xlsp-struct-configuration-item-section item)))
-        (when-let ((path (xlsp-unurify scope-uri))
-                   (default-directory (when (file-directory-p path)
-                                        (file-name-as-directory path)))
-                   (buf (ignore-errors
-                          (find-buffer-visiting (car (xlsp-conn-files conn))))))
+        (when-let* ((path (xlsp-unurify scope-uri))
+                    (default-directory (when (file-directory-p path)
+                                         (file-name-as-directory path)))
+                    (buf (ignore-errors
+                           (find-buffer-visiting (car (xlsp-conn-files conn))))))
           (with-temp-buffer
             ;; Ad hoc Olsen in 1b21ee0:
             ;; "If the [dir-locals] element is of the form (MAJOR-MODE . ALIST),

@@ -94,14 +94,17 @@
                                                'default-directory b))
                    when (string-prefix-p root dd)
                    collect b)))))
-  (when (< emacs-major-version 29)
+  (load "subr")
+  (unless (macrop #'with-undo-amalgamate)
     (defmacro with-undo-amalgamate (&rest body)
       "Like `progn' but perform BODY with amalgamated undo barriers.
 
 This allows multiple operations to be undone in a single step.
 When undo is disabled this behaves like `progn'."
       (declare (indent 0) (debug t))
-      (let ((handle (make-symbol "--change-group-handle--")))
+      (let ((handle (make-symbol "--change-group-handle--"))
+	    (undo-strong-limit (when (boundp 'undo-strong-limit)
+				 (list '(undo-strong-limit most-positive-fixnum)))))
         `(let ((,handle (prepare-change-group))
                ;; Don't truncate any undo data in the middle of this,
                ;; otherwise Emacs might truncate part of the resulting
@@ -109,14 +112,16 @@ When undo is disabled this behaves like `progn'."
                ;; undo-boundaries were never added in the first place.
                (undo-outer-limit nil)
                (undo-limit most-positive-fixnum)
-               (undo-strong-limit most-positive-fixnum))
+               ,@undo-strong-limit)
            (unwind-protect
                (progn
                  (activate-change-group ,handle)
                  ,@body)
              (progn
                (accept-change-group ,handle)
-               (undo-amalgamate-change-group ,handle))))))
+               (undo-amalgamate-change-group ,handle)))))))
+  (require 'seq)
+  (unless (functionp #'seq-keep)
     (defun seq-keep (function sequence)
       "Apply FUNCTION to SEQUENCE and return all non-nil results."
       (delq nil (seq-map function sequence)))))
@@ -150,8 +155,8 @@ When undo is disabled this behaves like `progn'."
            (cl-letf (((symbol-function 'xlsp-rpc--message) #'ignore))
              ;; inhibit-message fixed in 60df437 in Commercial
              (prog1 (apply f proc change args)
-               (when-let ((conn (process-get proc 'xlsp-rpc-connection))
-                          (died-p (not (process-live-p proc))))
+               (when-let* ((conn (process-get proc 'xlsp-rpc-connection))
+                           (died-p (not (process-live-p proc))))
                  (display-warning
                   'xlsp
                   (format "%s, %s" (process-name proc) change)
@@ -169,8 +174,8 @@ I use inode in case project directory gets renamed.")
 
 (defsubst xlsp-comment-or-string-p ()
   (cond ((derived-mode-p 'tree-sitter-prog-mode)
-         (cl-case (when-let ((type (tree-sitter-node-type
-                                    (tree-sitter-node-at))))
+         (cl-case (when-let* ((type (tree-sitter-node-type
+                                     (tree-sitter-node-at))))
                     (intern type))
            ((comment string) t)))
         ((derived-mode-p 'prog-mode)
@@ -182,8 +187,8 @@ I use inode in case project directory gets renamed.")
                         (directory-file-name project-dir))))
 
 (defun xlsp-inode (directory)
-  (when-let ((inode (file-attribute-inode-number
-                     (file-attributes (expand-file-name directory)))))
+  (when-let* ((inode (file-attribute-inode-number
+                      (file-attributes (expand-file-name directory)))))
     (prog1 inode
       (puthash inode directory xlsp--inode-data))))
 
@@ -194,19 +199,19 @@ I use inode in case project directory gets renamed.")
   (declare (indent 2))
   (cl-destructuring-bind (conn-key project-dir)
       args
-    `(when-let ((mode (buffer-local-value 'major-mode ,buffer))
-                (file-name (buffer-file-name ,buffer))
-                (inode
-                 (xlsp-inode (expand-file-name
-                              (if-let ((project (project-current
-                                                 nil
-                                                 (file-name-directory file-name))))
-                                  (project-root project)
-                                (if (file-directory-p file-name)
-                                    file-name
-                                  (file-name-directory file-name))))))
-                (,project-dir (gethash inode xlsp--inode-data))
-                (,conn-key (cons mode inode)))
+    `(when-let* ((mode (buffer-local-value 'major-mode ,buffer))
+                 (file-name (buffer-file-name ,buffer))
+                 (inode
+                  (xlsp-inode (expand-file-name
+                               (if-let* ((project (project-current
+                                                   nil
+                                                   (file-name-directory file-name))))
+                                   (project-root project)
+                                 (if (file-directory-p file-name)
+                                     file-name
+                                   (file-name-directory file-name))))))
+                 (,project-dir (gethash inode xlsp--inode-data))
+                 (,conn-key (cons mode inode)))
        ,@body)))
 
 (defmacro xlsp-capability (conn &rest methods)
@@ -217,18 +222,18 @@ I use inode in case project directory gets renamed.")
             (setq sequence (list sequence))
             (push method sequence))
           methods)
-    `(when-let ((result (oref ,conn capabilities)))
+    `(when-let* ((result (oref ,conn capabilities)))
        (ignore-errors ,sequence))))
 
 (defmacro xlsp-sync-p (conn field)
   "Sync kind exists and is not 0."
-  `(when-let ((kind (xlsp-sync-kind ,conn ,field)))
+  `(when-let* ((kind (xlsp-sync-kind ,conn ,field)))
      (not (eq kind xlsp-text-document-sync-kind/none))))
 
 (defmacro xlsp-sync-kind (conn field)
   "Return value of sync kind."
-  `(when-let ((sync (xlsp-capability ,conn
-                      xlsp-struct-server-capabilities-text-document-sync)))
+  `(when-let* ((sync (xlsp-capability ,conn
+                       xlsp-struct-server-capabilities-text-document-sync)))
      (if (recordp sync)
          (funcall ',field sync)
        sync)))
@@ -241,9 +246,9 @@ I use inode in case project directory gets renamed.")
 (defun xlsp-connection-get (buffer)
   (with-xlsp-connection (conn-key project-dir)
       buffer
-    (when-let ((ret (or (xlsp-gv-connection conn-key)
-                        (when-let ((conn (xlsp--connect buffer project-dir)))
-                          (setf (xlsp-gv-connection conn-key) conn)))))
+    (when-let* ((ret (or (xlsp-gv-connection conn-key)
+                         (when-let* ((conn (xlsp--connect buffer project-dir)))
+                           (setf (xlsp-gv-connection conn-key) conn)))))
       (prog1 ret
         (cl-pushnew (buffer-file-name buffer) (oref ret files))))))
 
@@ -283,21 +288,21 @@ I use inode in case project directory gets renamed.")
           "SYNCHRONIZE* is naturally thread unsafe state."
           (when cumulate
             ;; workaround (explained in Commercial 5e80af7)
-            (when-let ((preceding (car (xlsp-synchronize-state-events synchronize*)))
-                       (preceding-range (plist-get preceding :range))
-                       (preceding-end (plist-get preceding-range :end))
-                       (preceding-start (plist-get preceding-range :start))
-                       (current-range (plist-get cumulate :range))
-                       (casify-p (and (let (case-fold-search)
-                                        (string-match-p
-                                         "[A-Z]" (plist-get preceding :text)))
-                                      (equal (plist-get preceding :text)
-                                             (plist-get cumulate :text))
-                                      (equal (plist-get preceding-range :start)
-                                             (plist-get current-range :start))
-                                      (= (length (plist-get preceding :text))
-                                         (- (plist-get preceding-end :character)
-                                            (plist-get preceding-start :character))))))
+            (when-let* ((preceding (car (xlsp-synchronize-state-events synchronize*)))
+			(preceding-range (plist-get preceding :range))
+			(preceding-end (plist-get preceding-range :end))
+			(preceding-start (plist-get preceding-range :start))
+			(current-range (plist-get cumulate :range))
+			(casify-p (and (let (case-fold-search)
+                                         (string-match-p
+                                          "[A-Z]" (plist-get preceding :text)))
+                                       (equal (plist-get preceding :text)
+                                              (plist-get cumulate :text))
+                                       (equal (plist-get preceding-range :start)
+                                              (plist-get current-range :start))
+                                       (= (length (plist-get preceding :text))
+                                          (- (plist-get preceding-end :character)
+                                             (plist-get preceding-start :character))))))
               (xlsp-message "xlsp-synchronize-closure: discarded casify %S" preceding)
               (pop (xlsp-synchronize-state-events synchronize*)))
             (push cumulate (xlsp-synchronize-state-events synchronize*))
@@ -318,26 +323,26 @@ I use inode in case project directory gets renamed.")
           (when send
             (when (xlsp-synchronize-state-timer synchronize*)
               (cancel-timer (xlsp-synchronize-state-timer synchronize*)))
-            (when-let ((conn (xlsp-connection-get
-                              (xlsp-synchronize-state-buffer synchronize*)))
-                       (kind (xlsp-sync-kind
-                              conn xlsp-struct-text-document-sync-options-change))
-                       (changes
-                        (cond ((eq kind xlsp-text-document-sync-kind/none)
-                               nil)
-                              ((eq kind xlsp-text-document-sync-kind/incremental)
-                               (nreverse
-                                (copy-sequence
-                                 (xlsp-synchronize-state-events synchronize*))))
-                              (t
-                               (let ((full-text
-                                      (with-current-buffer
-                                          (xlsp-synchronize-state-buffer synchronize*)
-                                        (save-restriction
-                                          (widen)
-                                          (buffer-substring-no-properties
-                                           (point-min) (point-max))))))
-                                 (list (xlsp-literal :text full-text)))))))
+            (when-let* ((conn (xlsp-connection-get
+                               (xlsp-synchronize-state-buffer synchronize*)))
+			(kind (xlsp-sync-kind
+                               conn xlsp-struct-text-document-sync-options-change))
+			(changes
+                         (cond ((eq kind xlsp-text-document-sync-kind/none)
+				nil)
+                               ((eq kind xlsp-text-document-sync-kind/incremental)
+				(nreverse
+                                 (copy-sequence
+                                  (xlsp-synchronize-state-events synchronize*))))
+                               (t
+				(let ((full-text
+                                       (with-current-buffer
+                                           (xlsp-synchronize-state-buffer synchronize*)
+                                         (save-restriction
+                                           (widen)
+                                           (buffer-substring-no-properties
+                                            (point-min) (point-max))))))
+                                  (list (xlsp-literal :text full-text)))))))
               (xlsp-rpc-notify     ; notifications are fire-and-forget
                conn
                xlsp-notification-text-document/did-change
@@ -377,7 +382,7 @@ I use inode in case project directory gets renamed.")
 
 (defmacro xlsp-sync-then-request (buffer &rest args)
   `(progn
-     (when-let ((conn (xlsp-connection-get ,buffer)))
+     (when-let* ((conn (xlsp-connection-get ,buffer)))
        (dolist (b (seq-keep #'find-buffer-visiting (xlsp-conn-files conn)))
          (funcall (with-current-buffer b (xlsp-synchronize-closure)) :send t))
        (funcall (function ,(if (memq :success-fn args)
@@ -386,8 +391,8 @@ I use inode in case project directory gets renamed.")
                 conn ,@args))))
 
 (defsubst xlsp-new-text (item)
-  (or (when-let ((text-edit
-                  (xlsp-struct-completion-item-text-edit item)))
+  (or (when-let* ((text-edit
+                   (xlsp-struct-completion-item-text-edit item)))
         (xlsp-struct-text-edit-new-text text-edit))
       (xlsp-struct-completion-item-filter-text item)
       (xlsp-struct-completion-item-label item)))
@@ -417,7 +422,7 @@ I use inode in case project directory gets renamed.")
       (let ((re (flx-regexp query)))
         (seq-keep
          (lambda (item)
-           (when-let ((text (xlsp-new-text item)))
+           (when-let* ((text (xlsp-new-text item)))
              (when (string-match-p re text)
                item)))
          items)))))
@@ -448,118 +453,118 @@ I use inode in case project directory gets renamed.")
   "Implicitly called by eldoc machinery which passes in ELDOC-CB.
 ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends."
-  (when-let ((buffer (find-buffer-visiting file))
-             (relevant-p (with-current-buffer buffer
-                           (not (xlsp-comment-or-string-p)))))
+  (when-let* ((buffer (find-buffer-visiting file))
+              (relevant-p (with-current-buffer buffer
+                            (not (xlsp-comment-or-string-p)))))
     (let ((heuristic-target (thing-at-point 'symbol)))
       (if (and heuristic-target (equal (car cache*) heuristic-target))
           (funcall eldoc-cb (cdr cache*))
-        (when-let ((conn (xlsp-connection-get buffer))
-                   (params (make-xlsp-struct-signature-help-params
-                            :text-document (make-xlsp-struct-text-document-identifier
-                                            :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                            :position (let ((their-pos (xlsp-their-pos buffer (point))))
-                                        (make-xlsp-struct-position
-                                         :line (car their-pos)
-                                         :character (cdr their-pos)))
-                            :context (make-xlsp-struct-signature-help-context
-                                      :is-retrigger
-                                      (if (car cache*) t :json-false)
-                                      :trigger-kind
-                                      (if (and (eq last-command 'self-insert-command)
-                                               (characterp last-command-event)
-                                               (member (char-to-string last-command-event)
-                                                       (append (xlsp-capability
-                                                                 conn xlsp-struct-server-capabilities-signature-help-provider
-                                                                 xlsp-struct-signature-help-options-trigger-characters)
-                                                               nil)))
-                                          xlsp-signature-help-trigger-kind/trigger-character
-                                        xlsp-signature-help-trigger-kind/content-change)))))
+        (when-let* ((conn (xlsp-connection-get buffer))
+                    (params (make-xlsp-struct-signature-help-params
+                             :text-document (make-xlsp-struct-text-document-identifier
+                                             :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                             :position (let ((their-pos (xlsp-their-pos buffer (point))))
+                                         (make-xlsp-struct-position
+                                          :line (car their-pos)
+                                          :character (cdr their-pos)))
+                             :context (make-xlsp-struct-signature-help-context
+                                       :is-retrigger
+                                       (if (car cache*) t :json-false)
+                                       :trigger-kind
+                                       (if (and (eq last-command 'self-insert-command)
+						(characterp last-command-event)
+						(member (char-to-string last-command-event)
+							(append (xlsp-capability
+                                                                  conn xlsp-struct-server-capabilities-signature-help-provider
+                                                                  xlsp-struct-signature-help-options-trigger-characters)
+								nil)))
+                                           xlsp-signature-help-trigger-kind/trigger-character
+                                         xlsp-signature-help-trigger-kind/content-change)))))
           (xlsp-sync-then-request
            buffer
            xlsp-request-text-document/signature-help
            (xlsp-jsonify params)
            :success-fn
            (lambda (result-plist)
-             (when-let ((help
-                         (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
-                        (formatify
-                         (let ((i* 0))
-                           (cl-function
-                            (lambda (sig
-                                     &aux
-                                     (sig-active
-                                      (xlsp-struct-signature-help-active-signature help))
-                                     (documentation
-                                      (xlsp-struct-signature-information-documentation sig))
-                                     (label
-                                      (xlsp-struct-signature-information-label sig))
-                                     (params
-                                      (xlsp-struct-signature-information-parameters sig))
-                                     (param-active
-                                      (or (xlsp-struct-signature-information-active-parameter sig)
-                                          (xlsp-struct-signature-help-active-parameter help)))
-                                     (i (prog1 i* (cl-incf i*)))
-                                     formals-beg formals-end)
-                              (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
-                                ;; Ad-hoc attempt to parse label as <name>(<args>)
-                                (setq formals-beg (match-beginning 2)
-                                      formals-end (match-end 2))
-                                (add-face-text-property (match-beginning 1) (match-end 1)
-                                                        'font-lock-function-name-face
-                                                        nil label))
-                              (when (eql i sig-active)
-                                ;; Processing the "active signature".
-                                (when-let ((doc-p (stringp documentation))
-                                           (match-p (string-match
-                                                     "[[:space:]]*\\([^.\r\n]+[.]?\\)"
-                                                     documentation))
-                                           (doc-match (match-string 1 documentation)))
-                                  ;; Add one-line-summary to signature line
-                                  (unless (string-prefix-p (string-trim doc-match) label)
-                                    (setq label (concat label ": "
-                                                        (xlsp-format-markup doc-match)))))
-                                (when-let ((formals-p formals-beg)
-                                           (formals (cl-subseq label formals-beg formals-end))
-                                           (param-p (fixnump param-active))
-                                           (param (aref params (min (1- (length params))
-                                                                    param-active)))
-                                           (param-label (xlsp-struct-parameter-information-label
-                                                         param)))
-                                  ;; Highlight the active one of the args.
-                                  (when-let ((beg-end
-                                              (if (stringp param-label)
-                                                  (let (case-fold-search)
-                                                    (when (string-match
-                                                           (format "\\<%s\\>"
-                                                                   (regexp-quote param-label))
-                                                           formals)
-                                                      (cons (+ formals-beg (match-beginning 0))
-                                                            (+ formals-beg (match-end 0)))))
-                                                (cons (aref param-label 0)
-                                                      (aref param-label 1)))))
-                                    (add-face-text-property
-                                     (car beg-end) (cdr beg-end)
-                                     'eldoc-highlight-function-argument
-                                     nil label))
-                                  ;; Add its doc on its own line.
-                                  (when-let ((param-doc
-                                              (xlsp-struct-parameter-information-documentation
-                                               param)))
-                                    (setq label
-                                          (concat
-                                           label "\n"
-                                           (propertize
-                                            (if (stringp param-label)
-                                                param-label
-                                              (apply #'cl-subseq label
-                                                     (append param-label nil)))
-                                            'face 'eldoc-highlight-function-argument)
-                                           ": " (xlsp-format-markup param-doc))))))
-                              label))))
-                        (formatted (mapconcat formatify
-                                              (xlsp-struct-signature-help-signatures help)
-                                              "\n")))
+             (when-let* ((help
+                          (xlsp-unjsonify 'xlsp-struct-signature-help result-plist))
+                         (formatify
+                          (let ((i* 0))
+                            (cl-function
+                             (lambda (sig
+                                      &aux
+                                      (sig-active
+                                       (xlsp-struct-signature-help-active-signature help))
+                                      (documentation
+                                       (xlsp-struct-signature-information-documentation sig))
+                                      (label
+                                       (xlsp-struct-signature-information-label sig))
+                                      (params
+                                       (xlsp-struct-signature-information-parameters sig))
+                                      (param-active
+                                       (or (xlsp-struct-signature-information-active-parameter sig)
+                                           (xlsp-struct-signature-help-active-parameter help)))
+                                      (i (prog1 i* (cl-incf i*)))
+                                      formals-beg formals-end)
+                               (when (string-match "\\([^(]+\\)(\\([^)]+\\))" label)
+                                 ;; Ad-hoc attempt to parse label as <name>(<args>)
+                                 (setq formals-beg (match-beginning 2)
+                                       formals-end (match-end 2))
+                                 (add-face-text-property (match-beginning 1) (match-end 1)
+                                                         'font-lock-function-name-face
+                                                         nil label))
+                               (when (eql i sig-active)
+                                 ;; Processing the "active signature".
+                                 (when-let* ((doc-p (stringp documentation))
+                                             (match-p (string-match
+                                                       "[[:space:]]*\\([^.\r\n]+[.]?\\)"
+                                                       documentation))
+                                             (doc-match (match-string 1 documentation)))
+                                   ;; Add one-line-summary to signature line
+                                   (unless (string-prefix-p (string-trim doc-match) label)
+                                     (setq label (concat label ": "
+                                                         (xlsp-format-markup doc-match)))))
+                                 (when-let* ((formals-p formals-beg)
+                                             (formals (cl-subseq label formals-beg formals-end))
+                                             (param-p (fixnump param-active))
+                                             (param (aref params (min (1- (length params))
+                                                                      param-active)))
+                                             (param-label (xlsp-struct-parameter-information-label
+                                                           param)))
+                                   ;; Highlight the active one of the args.
+                                   (when-let* ((beg-end
+						(if (stringp param-label)
+                                                    (let (case-fold-search)
+                                                      (when (string-match
+                                                             (format "\\<%s\\>"
+                                                                     (regexp-quote param-label))
+                                                             formals)
+							(cons (+ formals-beg (match-beginning 0))
+                                                              (+ formals-beg (match-end 0)))))
+                                                  (cons (aref param-label 0)
+							(aref param-label 1)))))
+                                     (add-face-text-property
+                                      (car beg-end) (cdr beg-end)
+                                      'eldoc-highlight-function-argument
+                                      nil label))
+                                   ;; Add its doc on its own line.
+                                   (when-let* ((param-doc
+						(xlsp-struct-parameter-information-documentation
+						 param)))
+                                     (setq label
+                                           (concat
+                                            label "\n"
+                                            (propertize
+                                             (if (stringp param-label)
+                                                 param-label
+                                               (apply #'cl-subseq label
+                                                      (append param-label nil)))
+                                             'face 'eldoc-highlight-function-argument)
+                                            ": " (xlsp-format-markup param-doc))))))
+                               label))))
+                         (formatted (mapconcat formatify
+                                               (xlsp-struct-signature-help-signatures help)
+                                               "\n")))
                (when heuristic-target
                  (setcar cache* heuristic-target)
                  (setcdr cache* formatted))
@@ -576,9 +581,9 @@ ELDOC-CB takes a docstring, and optionally bespoke key-value
 pairs for its frontends.  The eldoc situation got even messier
 in v28, if that were possible, and a SYNC* value of true
 retrofits current logic to v27."
-  (when-let ((buffer (find-buffer-visiting file))
-             (relevant-p (with-current-buffer buffer
-                           (not (xlsp-comment-or-string-p)))))
+  (when-let* ((buffer (find-buffer-visiting file))
+              (relevant-p (with-current-buffer buffer
+                            (not (xlsp-comment-or-string-p)))))
     (let ((heuristic-target (with-current-buffer buffer
                               (thing-at-point 'symbol)))
           (eldoc-cb-args '(:buffer t)))
@@ -593,31 +598,31 @@ retrofits current logic to v27."
                                      :character (cdr their-pos)))))
                (success-fn
                 (lambda (result-plist)
-                  (when-let ((hover
-                              (xlsp-unjsonify 'xlsp-struct-hover result-plist))
-                             (hover-contents (xlsp-struct-hover-contents hover))
-                             (markups
-                              (let ((contents hover-contents))
-                                (unless (vectorp contents)
-                                  (setq contents (vector contents)))
-                                (mapcar
-                                 (lambda (content)
-                                   "MarkedString = string | {language:string; value:string}"
-                                   (if (and (listp content)
-                                            (plist-get content :language)
-                                            (plist-get content :value))
-                                       (mapconcat #'identity
-                                                  (cl-remove-if-not #'stringp content)
-                                                  "\n")
-                                     content))
-                                 contents)))
-                             (formatted
-                              (mapconcat #'identity
-                                         (seq-keep #'xlsp-format-markup markups) "\n")))
+                  (when-let* ((hover
+                               (xlsp-unjsonify 'xlsp-struct-hover result-plist))
+                              (hover-contents (xlsp-struct-hover-contents hover))
+                              (markups
+                               (let ((contents hover-contents))
+                                 (unless (vectorp contents)
+                                   (setq contents (vector contents)))
+                                 (mapcar
+                                  (lambda (content)
+                                    "MarkedString = string | {language:string; value:string}"
+                                    (if (and (listp content)
+                                             (plist-get content :language)
+                                             (plist-get content :value))
+					(mapconcat #'identity
+                                                   (cl-remove-if-not #'stringp content)
+                                                   "\n")
+                                      content))
+                                  contents)))
+                              (formatted
+                               (mapconcat #'identity
+                                          (seq-keep #'xlsp-format-markup markups) "\n")))
                     (when heuristic-target
                       (setcar cache* heuristic-target)
                       (setcdr cache* formatted))
-                    (apply eldoc-cb formatted eldoc-cb-args))))
+		    (apply eldoc-cb formatted eldoc-cb-args))))
                (error-fn
                 (lambda (error)
                   (xlsp-message "xlsp-do-request-hover: %s (%s)"
@@ -638,23 +643,23 @@ retrofits current logic to v27."
   "Note SYNC argument and qq/sync/ in xlsp-sync-then-request are distinct.
 The first says whether to xlsp-rpc-async-request or xlsp-rpc-request.
 The second refers to LSP document synchronization."
-  (when-let ((conn (xlsp-connection-get buffer))
-             (relevant-p (with-current-buffer buffer
-                           (not (xlsp-comment-or-string-p))))
-             (params (make-xlsp-struct-completion-params
-                      :text-document (make-xlsp-struct-text-document-identifier
-                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
-                                  (make-xlsp-struct-position
-                                   :line (car their-pos)
-                                   :character (cdr their-pos)))
-                      :context (make-xlsp-struct-completion-context
-                                :trigger-kind
-                                (if trigger-char
-                                    xlsp-completion-trigger-kind/trigger-character
-                                  xlsp-completion-trigger-kind/invoked)
-                                :trigger-character
-                                (when trigger-char (char-to-string trigger-char))))))
+  (when-let* ((conn (xlsp-connection-get buffer))
+              (relevant-p (with-current-buffer buffer
+                            (not (xlsp-comment-or-string-p))))
+              (params (make-xlsp-struct-completion-params
+                       :text-document (make-xlsp-struct-text-document-identifier
+                                       :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                       :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                                   (make-xlsp-struct-position
+                                    :line (car their-pos)
+                                    :character (cdr their-pos)))
+                       :context (make-xlsp-struct-completion-context
+                                 :trigger-kind
+                                 (if trigger-char
+                                     xlsp-completion-trigger-kind/trigger-character
+                                   xlsp-completion-trigger-kind/invoked)
+                                 :trigger-character
+                                 (when trigger-char (char-to-string trigger-char))))))
     (if sync
         (let ((result-plist (xlsp-sync-then-request
                              buffer
@@ -676,24 +681,24 @@ The second refers to LSP document synchronization."
 
 (defun xlsp-do-request-definition (buffer pos)
   "This retrieves a location, not a definition."
-  (when-let ((conn (xlsp-connection-get buffer))
-             (params (make-xlsp-struct-definition-params
-                      :text-document (make-xlsp-struct-text-document-identifier
-                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
-                                  (make-xlsp-struct-position
-                                   :line (car their-pos)
-                                   :character (cdr their-pos)))))
-             (result-array (xlsp-sync-then-request
-                            buffer
-                            xlsp-request-text-document/definition
-                            (xlsp-jsonify params))))
+  (when-let* ((conn (xlsp-connection-get buffer))
+              (params (make-xlsp-struct-definition-params
+                       :text-document (make-xlsp-struct-text-document-identifier
+                                       :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                       :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                                   (make-xlsp-struct-position
+                                    :line (car their-pos)
+                                    :character (cdr their-pos)))))
+              (result-array (xlsp-sync-then-request
+                             buffer
+                             xlsp-request-text-document/definition
+                             (xlsp-jsonify params))))
     (unless (vectorp result-array)
       (setq result-array (vector result-array)))
     ;; first attempt parsing as Location[] then as LocationLink[]
-    (when-let ((locations
-                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-location)
-                         result-array)))
+    (when-let* ((locations
+                 (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-location)
+                          result-array)))
       (unless (xlsp-struct-location-uri (car locations))
         (setq locations (seq-map (apply-partially #'xlsp-unjsonify
                                                   'xlsp-struct-location-link)
@@ -702,20 +707,20 @@ The second refers to LSP document synchronization."
 
 (defun xlsp-do-request-references (buffer pos)
   "This retrieves locations."
-  (when-let ((conn (xlsp-connection-get buffer))
-             (params (make-xlsp-struct-reference-params
-                      :text-document (make-xlsp-struct-text-document-identifier
-                                      :uri (xlsp-urify (concat (buffer-file-name buffer))))
-                      :position (let ((their-pos (xlsp-their-pos buffer pos)))
-                                  (make-xlsp-struct-position
-                                   :line (car their-pos)
-                                   :character (cdr their-pos)))
-                      :context (make-xlsp-struct-reference-context
-                                :include-declaration t)))
-             (result-array (xlsp-sync-then-request
-                            buffer
-                            xlsp-request-text-document/references
-                            (xlsp-jsonify params))))
+  (when-let* ((conn (xlsp-connection-get buffer))
+              (params (make-xlsp-struct-reference-params
+                       :text-document (make-xlsp-struct-text-document-identifier
+                                       :uri (xlsp-urify (concat (buffer-file-name buffer))))
+                       :position (let ((their-pos (xlsp-their-pos buffer pos)))
+                                   (make-xlsp-struct-position
+                                    :line (car their-pos)
+                                    :character (cdr their-pos)))
+                       :context (make-xlsp-struct-reference-context
+                                 :include-declaration t)))
+              (result-array (xlsp-sync-then-request
+                             buffer
+                             xlsp-request-text-document/references
+                             (xlsp-jsonify params))))
     (unless (vectorp result-array)
       (setq result-array (vector result-array)))
     (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-location)
@@ -754,9 +759,9 @@ The second refers to LSP document synchronization."
                         buffer
                         xlsp-request-text-document/formatting
                         (xlsp-jsonify params))))
-    (when-let ((edits
-                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
-                         result-array)))
+    (when-let* ((edits
+                 (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                          result-array)))
       (xlsp-apply-text-edits edits))))
 
 (defun xlsp-do-request-range-formatting (buffer beg end)
@@ -777,9 +782,9 @@ The second refers to LSP document synchronization."
                         buffer
                         xlsp-request-text-document/range-formatting
                         (xlsp-jsonify params))))
-    (when-let ((edits
-                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
-                         result-array)))
+    (when-let* ((edits
+                 (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                          result-array)))
       (xlsp-apply-text-edits edits))))
 
 (defun xlsp-do-request-on-type-formatting (buffer pos on-character)
@@ -800,9 +805,9 @@ naming is fairly egregious."
                         buffer
                         xlsp-request-text-document/on-type-formatting
                         (xlsp-jsonify params))))
-    (when-let ((edits
-                (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
-                         result-array)))
+    (when-let* ((edits
+                 (seq-map (apply-partially #'xlsp-unjsonify 'xlsp-struct-text-edit)
+                          result-array)))
       (xlsp-apply-text-edits edits))))
 
 (defun xlsp-apply-text-edits (edits)
@@ -838,13 +843,13 @@ naming is fairly egregious."
     (apply #'message (concat lhs format) args)))
 
 (defun xlsp-do-request-workspace-symbols (buffer query)
-  (when-let ((conn (xlsp-connection-get buffer))
-             (params (make-xlsp-struct-workspace-symbol-params
-                      :query query))
-             (result-array (xlsp-sync-then-request
-                            buffer
-                            xlsp-request-workspace/symbol
-                            (xlsp-jsonify params))))
+  (when-let* ((conn (xlsp-connection-get buffer))
+              (params (make-xlsp-struct-workspace-symbol-params
+                       :query query))
+              (result-array (xlsp-sync-then-request
+                             buffer
+                             xlsp-request-workspace/symbol
+                             (xlsp-jsonify params))))
     (seq-map (apply-partially
               #'xlsp-unjsonify
               'xlsp-struct-workspace-symbol)
@@ -857,45 +862,45 @@ Hooks must be tracked since closures ruin remove-hook's #\='equal criterion.")
 (defun xlsp-completion-callback (state* buffer* cb* completion-list)
   "The interval [BEG, END) spans the region supplantable by
 CANDIDATES."
-  (if-let ((items
-            (append (xlsp-struct-completion-list-items completion-list) nil))
-           (beg-end (if-let ((has-text-edit
-                              (seq-find #'xlsp-struct-completion-item-text-edit
-                                        items))
-                             (range (xlsp-struct-text-edit-range
-                                     (xlsp-struct-completion-item-text-edit
-                                      has-text-edit))))
-                        ;; Good, server has specific range info.
-                        (cons (xlsp-our-pos buffer* (xlsp-struct-range-start range))
-                              (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
-                      ;; Bad, let's hope server agrees with us.
-                      (with-current-buffer buffer*
-                        (or (bounds-of-thing-at-point 'symbol)
-                            `(,(point) . ,(point))))))
-           (beg (car beg-end))
-           (end (cdr beg-end))
-           (extant (with-current-buffer buffer*
-                     ;; server often out of sync by design
-                     (ignore-errors (buffer-substring-no-properties
-                                     beg end))))
-           (filtered-items
-            (sort
-             (funcall
-              (or xlsp-completion-filter-function
-                  (symbol-function 'xlsp-default-completion-filter))
-              extant items)
-             (lambda (i1 i2)
-               (cond ((not (string-prefix-p extant (xlsp-new-text i1)))
-                      i2)
-                     ((not (string-prefix-p extant (xlsp-new-text i2)))
-                      i1)
-                     (t
-                      (let ((s1 (xlsp-struct-completion-item-sort-text i1))
-                            (s2 (xlsp-struct-completion-item-sort-text i2)))
-                        (if (and s1 s2)
-                            (string< s1 s2)
-                          (not s2))))))))
-           (texts (mapcar #'xlsp-new-text filtered-items)))
+  (if-let* ((items
+             (append (xlsp-struct-completion-list-items completion-list) nil))
+            (beg-end (if-let* ((has-text-edit
+				(seq-find #'xlsp-struct-completion-item-text-edit
+                                          items))
+                               (range (xlsp-struct-text-edit-range
+                                       (xlsp-struct-completion-item-text-edit
+					has-text-edit))))
+                         ;; Good, server has specific range info.
+                         (cons (xlsp-our-pos buffer* (xlsp-struct-range-start range))
+                               (xlsp-our-pos buffer* (xlsp-struct-range-end range)))
+                       ;; Bad, let's hope server agrees with us.
+                       (with-current-buffer buffer*
+                         (or (bounds-of-thing-at-point 'symbol)
+                             `(,(point) . ,(point))))))
+            (beg (car beg-end))
+            (end (cdr beg-end))
+            (extant (with-current-buffer buffer*
+                      ;; server often out of sync by design
+                      (ignore-errors (buffer-substring-no-properties
+                                      beg end))))
+            (filtered-items
+             (sort
+              (funcall
+               (or xlsp-completion-filter-function
+                   (symbol-function 'xlsp-default-completion-filter))
+               extant items)
+              (lambda (i1 i2)
+		(cond ((not (string-prefix-p extant (xlsp-new-text i1)))
+                       i2)
+                      ((not (string-prefix-p extant (xlsp-new-text i2)))
+                       i1)
+                      (t
+                       (let ((s1 (xlsp-struct-completion-item-sort-text i1))
+                             (s2 (xlsp-struct-completion-item-sort-text i2)))
+                         (if (and s1 s2)
+                             (string< s1 s2)
+                           (not s2))))))))
+            (texts (mapcar #'xlsp-new-text filtered-items)))
       (prog1 (funcall cb* texts)
         (setf (xlsp-completion-state-beg state*) beg
               (xlsp-completion-state-prefix state*) extant
@@ -911,10 +916,10 @@ CANDIDATES."
         (dotimes (i (length texts))
           (puthash (nth i texts) i
                    (xlsp-completion-state-index-of state*)))
-        (when-let ((conn (xlsp-connection-get buffer*))
-                   (capable-p (xlsp-capability conn
-                                xlsp-struct-server-capabilities-completion-provider
-                                xlsp-struct-completion-options-resolve-provider)))
+        (when-let* ((conn (xlsp-connection-get buffer*))
+                    (capable-p (xlsp-capability conn
+                                 xlsp-struct-server-capabilities-completion-provider
+                                 xlsp-struct-completion-options-resolve-provider)))
           ;; "By default the request can only delay the
           ;; computation of the detail and documentation
           ;; properties."
@@ -931,7 +936,7 @@ CANDIDATES."
                         (cl-function
                          (lambda (i* result-plist
                                      &aux (post (xlsp-unjsonify 'xlsp-struct-completion-item result-plist)))
-                           (when-let
+                           (when-let*
                                ((active-p (with-current-buffer buffer*
                                             company-point))
                                 (text (xlsp-new-text post))
@@ -959,12 +964,12 @@ CANDIDATES."
 
 (defun xlsp-heuristic-reuse-matches-p (buffer state)
   (with-current-buffer buffer
-    (when-let ((beg (xlsp-completion-state-beg state))
-               (after-p (>= (point) beg))
-               (orig-prefix (xlsp-completion-state-prefix state))
-               (matches (xlsp-completion-state-cached-texts state))
-               (forward-p (>= (point) (+ beg (length orig-prefix))))
-               (prefix (buffer-substring beg (point))))
+    (when-let* ((beg (xlsp-completion-state-beg state))
+		(after-p (>= (point) beg))
+		(orig-prefix (xlsp-completion-state-prefix state))
+		(matches (xlsp-completion-state-cached-texts state))
+		(forward-p (>= (point) (+ beg (length orig-prefix))))
+		(prefix (buffer-substring beg (point))))
       (and (string-prefix-p orig-prefix prefix)
            (string-match-p "^[[:alnum:]_]+$" prefix)))))
 
@@ -1016,22 +1021,22 @@ CANDIDATES."
               (sorted
                (apply-partially #'identity t))
               (annotation
-               (when-let ((index-of (xlsp-completion-state-index-of completion-state))
-                          (details (xlsp-completion-state-details completion-state))
-                          (detail (nth (gethash candidate index-of) details)))
+               (when-let* ((index-of (xlsp-completion-state-index-of completion-state))
+                           (details (xlsp-completion-state-details completion-state))
+                           (detail (nth (gethash candidate index-of) details)))
                  (concat " " (propertize
                               detail 'face 'font-lock-function-name-face))))
               (kind             ; keys in company-vscode-icons-mapping
-               (when-let ((index-of (xlsp-completion-state-index-of completion-state))
-                          (kinds (xlsp-completion-state-kinds completion-state))
-                          (kind (alist-get
-                                 (nth (gethash candidate index-of) kinds)
-                                 xlsp-company-kind-alist)))
+               (when-let* ((index-of (xlsp-completion-state-index-of completion-state))
+                           (kinds (xlsp-completion-state-kinds completion-state))
+                           (kind (alist-get
+                                  (nth (gethash candidate index-of) kinds)
+                                  xlsp-company-kind-alist)))
                  (intern-soft (downcase kind))))
               (post-completion
-               (when-let ((index-of (xlsp-completion-state-index-of completion-state))
-                          (additionses (xlsp-completion-state-additionses completion-state))
-                          (additions (nth (gethash candidate index-of) additionses)))
+               (when-let* ((index-of (xlsp-completion-state-index-of completion-state))
+                           (additionses (xlsp-completion-state-additionses completion-state))
+                           (additions (nth (gethash candidate index-of) additionses)))
                  (xlsp-apply-text-edits additions)))
               (prefix
                ;; We use the "prefix" directive only to predict whether
@@ -1039,16 +1044,16 @@ CANDIDATES."
                ;; the server knows what the prefix really is.
                (unless (xlsp-comment-or-string-p)
                  (let ((word (company-grab-symbol)))
-                   (if-let ((conn (xlsp-connection-get (current-buffer)))
-                            (triggers
-                             (append
-                              (xlsp-capability conn
-                                xlsp-struct-server-capabilities-completion-provider
-                                xlsp-struct-completion-options-trigger-characters)
-                              nil))
-                            (trigger-char
-                             (car (memq (char-after (max (point-min) (1- (point))))
-                                        (mapcar #'string-to-char triggers)))))
+                   (if-let* ((conn (xlsp-connection-get (current-buffer)))
+                             (triggers
+                              (append
+                               (xlsp-capability conn
+                                 xlsp-struct-server-capabilities-completion-provider
+                                 xlsp-struct-completion-options-trigger-characters)
+                               nil))
+                             (trigger-char
+                              (car (memq (char-after (max (point-min) (1- (point))))
+                                         (mapcar #'string-to-char triggers)))))
                        (cons word
                              (setf (xlsp-completion-state-trigger-char completion-state)
                                    trigger-char))
@@ -1080,7 +1085,7 @@ CANDIDATES."
           (setq-local company-backends (cons backend company-backends)
                       company-lighter (concat " " company-lighter-base))
           (xlsp-toggle-hooks nil) ; cleanse palate even if toggling on
-          (when-let ((conn (xlsp-connection-get (current-buffer))))
+          (when-let* ((conn (xlsp-connection-get (current-buffer))))
             (if (xlsp-rpc-connection-ready-p conn :handshook)
                 (progn
                   (xlsp-toggle-hooks conn)
@@ -1089,10 +1094,10 @@ CANDIDATES."
                     (funcall (xlsp-did-open-text-document))))
               (ignore "Presume async handshake will install hooks."))))
       ;; those add-functions are forever...
-      (when-let ((conn (xlsp-connection-get (current-buffer)))
-                 (sync-p (xlsp-sync-p
-                          (xlsp-connection-get (current-buffer))
-                          xlsp-struct-text-document-sync-options-open-close)))
+      (when-let* ((conn (xlsp-connection-get (current-buffer)))
+                  (sync-p (xlsp-sync-p
+                           (xlsp-connection-get (current-buffer))
+                           xlsp-struct-text-document-sync-options-open-close)))
         ;; things like project-kill-buffers kill the process buffer
         ;; before did-close can attempt notification
         (condition-case err
@@ -1118,7 +1123,7 @@ CANDIDATES."
 (defun xlsp--connection-destroy (conn-key project-dir)
   (dolist (b (cl-remove-if-not
               #'buffer-file-name
-              (when-let ((proj (project-current nil project-dir)))
+              (when-let* ((proj (project-current nil project-dir)))
                 (project-buffers proj))))
     (with-current-buffer b
       (when (equal major-mode (car conn-key))
@@ -1148,12 +1153,13 @@ CANDIDATES."
           (assoc-delete-all conn-key xlsp--connections))))
 
 (defun xlsp--connect (buffer project-dir)
-  (when-let
+  (when-let*
       ((mode (buffer-local-value 'major-mode buffer))
        (name (xlsp-conn-string mode project-dir))
        (initialize-params
         (make-xlsp-struct-initialize-params
          :process-id (emacs-pid)
+         :root-uri (xlsp-urify project-dir)
          :initialization-options (xlsp--initialization-options project-dir)
          :capabilities xlsp-default-struct-client-capabilities
          :workspace-folders (xlsp-array
@@ -1219,7 +1225,7 @@ CANDIDATES."
                           buffer
                         (dolist (b (cl-remove-if-not
                                     #'buffer-file-name
-                                    (when-let ((proj (project-current nil project-dir)))
+                                    (when-let* ((proj (project-current nil project-dir)))
                                       (project-buffers proj))))
                           (with-current-buffer b
                             (when (equal major-mode (car conn-key))
@@ -1377,7 +1383,7 @@ CANDIDATES."
            (make-xlsp-struct-did-open-text-document-params
             :text-document (make-xlsp-struct-text-document-item
                             :uri (xlsp-urify (buffer-file-name buffer*))
-                            :language-id ""
+			    :language-id ""
                             :version (funcall (xlsp-synchronize-closure) :version t)
                             :text (with-current-buffer buffer*
                                     (save-restriction
@@ -1410,8 +1416,8 @@ CANDIDATES."
 
 (defun xlsp-deregister-file (file)
   "Dispose connection if last registered file."
-  (when-let ((buffer (find-buffer-visiting file))
-             (conn (xlsp-connection-get buffer)))
+  (when-let* ((buffer (find-buffer-visiting file))
+              (conn (xlsp-connection-get buffer)))
     (oset conn files (delq file (xlsp-conn-files conn)))
     (unless (xlsp-conn-files conn)
       (xlsp-connection-remove buffer))))
@@ -1532,8 +1538,8 @@ CANDIDATES."
         (cl-destructuring-bind (hooks predicate closure &optional depth)
             (append entry nil)
           (if conn
-              (when-let ((add-p (funcall predicate conn))
-                         (hook (funcall closure)))
+              (when-let* ((add-p (funcall predicate conn))
+                          (hook (funcall closure)))
                 (add-hook hooks hook depth :local)
                 (push (cons hooks hook) xlsp-hooks-alist))
             (when (symbolp closure)     ; one of the defaliases
@@ -1697,10 +1703,10 @@ The problem is that goes from glob to files, and I need converse."
       (setf (gv id) (assq-delete-all id (gv id))))))
 
 (defun xlsp-format-trigger-characters (conn)
-  (when-let ((options
-              (xlsp-capability
-                conn
-                xlsp-struct-server-capabilities-document-on-type-formatting-provider)))
+  (when-let* ((options
+               (xlsp-capability
+                 conn
+                 xlsp-struct-server-capabilities-document-on-type-formatting-provider)))
     (cl-remove-if
      #'zerop ; string-to-char of empty string is NUL character
      (seq-keep
@@ -1717,10 +1723,10 @@ The problem is that goes from glob to files, and I need converse."
   (interactive)
   (unless xlsp-mode
     (xlsp-mode))
-  (when-let ((conn (xlsp-connection-get (current-buffer)))
-             (capable-p
-              (xlsp-capability
-                conn xlsp-struct-server-capabilities-document-formatting-provider)))
+  (when-let* ((conn (xlsp-connection-get (current-buffer)))
+              (capable-p
+               (xlsp-capability
+                 conn xlsp-struct-server-capabilities-document-formatting-provider)))
     (xlsp-do-request-formatting (current-buffer))))
 
 ;;;###autoload
@@ -1728,10 +1734,10 @@ The problem is that goes from glob to files, and I need converse."
   (interactive "r")
   (unless xlsp-mode
     (xlsp-mode))
-  (when-let ((conn (xlsp-connection-get (current-buffer)))
-             (capable-p
-              (xlsp-capability
-                conn xlsp-struct-server-capabilities-document-range-formatting-provider)))
+  (when-let* ((conn (xlsp-connection-get (current-buffer)))
+              (capable-p
+               (xlsp-capability
+                 conn xlsp-struct-server-capabilities-document-range-formatting-provider)))
     (xlsp-do-request-range-formatting (current-buffer) beg end)))
 
 (put 'xlsp-workspace-configuration 'safe-local-variable 'listp)

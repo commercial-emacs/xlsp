@@ -68,7 +68,7 @@ lsp/3.17/specification/#uri"
         (puthash result camel xlsp--hyphenate-data)))))
 
 (defun xlsp-unhyphenate (hyphenate &optional slot-p)
-  (when-let ((result (gethash hyphenate xlsp--hyphenate-data)))
+  (when-let* ((result (gethash hyphenate xlsp--hyphenate-data)))
     (if slot-p
         (concat (downcase (cl-subseq result 0 1))
                 (cl-subseq result 1))
@@ -129,18 +129,18 @@ PositionEncodingKind currently disregarded."
         (widen)
         (let ((source-line (line-number-at-pos))
               (target-line (1+ (xlsp-struct-position-line their-pos))))
-          (when-let ((line-reached (zerop (forward-line (- target-line source-line))))
-                     (utf-16 (encode-coding-region
-                              (line-beginning-position)
-                              (line-end-position) 'utf-16 t))
-                     (pos (xlsp-struct-position-character their-pos))
-                     (upto-char (condition-case nil
-                                    (cl-subseq      ; add 2 for BOM
-                                     utf-16 0
-                                     (+ 2 (* 2 pos)))
-                                  (args-out-of-range
-                                   ;; server often out of sync by design
-                                   nil))))
+          (when-let* ((line-reached (zerop (forward-line (- target-line source-line))))
+                      (utf-16 (encode-coding-region
+                               (line-beginning-position)
+                               (line-end-position) 'utf-16 t))
+                      (pos (xlsp-struct-position-character their-pos))
+                      (upto-char (condition-case nil
+                                     (cl-subseq      ; add 2 for BOM
+                                      utf-16 0
+                                      (+ 2 (* 2 pos)))
+                                   (args-out-of-range
+                                    ;; server often out of sync by design
+                                    nil))))
             (+ (line-beginning-position)
                (length (decode-coding-string upto-char 'utf-16)))))))))
 
