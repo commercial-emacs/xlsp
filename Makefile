@@ -47,4 +47,4 @@ compile: epkg-compile
 test: compile epkg-test
 
 .PHONY: install
-install: compile epkg-install
+install: epkg-install
