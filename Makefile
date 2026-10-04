@@ -1,15 +1,14 @@
+include epkg.mk
+epkg.mk:
+	emacs --batch -l package -f package-initialize -l epkg -f epkg-copy-mk
+
 export EMACS ?= $(shell which emacs)
+EPKG_EL := $(filter-out _%,$(shell git ls-files *.el))
+EPKG_TEST_EL := $(shell git ls-files test/*.el)
+EPKG_FILES := $(shell git ls-files *.el)
+EPKG_MAIN := xlsp.el
 
 .DEFAULT_GOAL := compile
-
-CASK_DIR := $(shell cask package-directory)
-
-.PHONY: cask
-cask: $(CASK_DIR)
-
-$(CASK_DIR): Cask
-	cask install
-	touch $(CASK_DIR)
 
 .PHONY: schema
 schema: language-server-protocol/_specifications/lsp/3.17/metaModel/metaModel.json
@@ -42,31 +41,10 @@ microsoft:
 	git submodule add https://github.com/microsoft/language-server-protocol.git
 
 .PHONY: compile
-compile: cask
-	cask emacs -batch -L . -L tests \
-          --eval "(setq byte-compile-error-on-warn t)" \
-	  -f batch-byte-compile $$(cask files) tests/test-*.el; \
-	  (ret=$$? ; rm -f *.elc tests/*.elc && exit $$ret)
+compile: epkg-compile
 
 .PHONY: test
-test: compile
-	2>&1 cask emacs -batch -L . -L tests -l test-xlsp -f ert-run-tests-batch | tee /tmp/xlsp.test.out
-	@! grep -q "unexpected results" /tmp/xlsp.test.out
-
-.PHONY: dist-clean
-dist-clean:
-	rm -rf dist
-
-.PHONY: dist
-dist: dist-clean
-	mkdir dist
-	cp -p $$(git ls-files *.el) dist
+test: compile epkg-test
 
 .PHONY: install
-install: dist
-	$(EMACS) -Q --batch -f package-initialize \
-	  --eval "(add-to-list 'package-archives '(\"melpa\" . \"http://melpa.org/packages/\"))" \
-	  -f package-refresh-contents \
-	  --eval "(ignore-errors (apply (function package-delete) (alist-get (quote xlsp) package-alist)))" \
-	  --eval "(with-current-buffer (dired \"dist\") \
-	            (package-install-from-buffer))"
+install: compile epkg-install

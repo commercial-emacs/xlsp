@@ -20,8 +20,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-22.04]
-        emacs_version: [28.2, 29.2, 30.2]
+        os: [ubuntu-24.04]
+        emacs_version: [29.2, 30.2, 31.1]
 
     steps:
     - uses: actions/checkout@v6
@@ -30,34 +30,10 @@ jobs:
       with:
         version: ${{ matrix.emacs_version }}
 
-    - uses: actions/cache@v5
-      id: cache-cask-packages
-      with:
-        path: .cask
-        key: cache-cask-packages-000
-
-    - uses: actions/cache@v5
-      id: cache-local-bin
-      with:
-        path: $HOME/.local/bin
-        key: cache-local-bin-001
-
-    - uses: actions/cache@v5
-      id: cache-cask-executable
-      with:
-        path: ~/.cask
-        key: cache-cask-executable-000
-
-    - uses: cask/setup-cask@master
-      if: steps.cache-cask-executable.outputs.cache-hit != 'true'
-      with:
-          version: snapshot
-
     - name: paths
       run: |
         echo "$HOME/bin" >> $GITHUB_PATH
         echo "$HOME/.local/bin" >> $GITHUB_PATH
-        echo "$HOME/.cask/bin" >> $GITHUB_PATH
         echo "LD_LIBRARY_PATH=$HOME/.local/lib" >> $GITHUB_ENV
 
     - name: apt-get
@@ -65,6 +41,15 @@ jobs:
         sudo apt-get -yq update
         DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install gnutls-bin sharutils gnupg2 dirmngr libreadline-dev libcurl4-openssl-dev clangd-12
 
+    - uses: actions/checkout@v4
+      with:
+        repository: dickmao/epkg
+        path: epkg
+
+    - name: epkg
+      run: make -C epkg install
+
     - name: test
       run: |
         make test
+        make install

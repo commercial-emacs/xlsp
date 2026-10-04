@@ -1,2 +1,2 @@
-/dist
-/.cask
+/epkg/
+/epkg.mk
