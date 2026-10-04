@@ -4,7 +4,7 @@ epkg.mk:
 
 export EMACS ?= $(shell which emacs)
 EPKG_EL := $(filter-out _%,$(shell git ls-files *.el))
-EPKG_TEST_EL := $(shell git ls-files test/*.el)
+EPKG_TEST_EL := $(shell git ls-files tests/*.el)
 EPKG_FILES := $(shell git ls-files *.el)
 EPKG_MAIN := xlsp.el
 
