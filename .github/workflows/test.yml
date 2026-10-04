@@ -21,7 +21,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        emacs_version: [31.1]
+        emacs_version: [29.2, 30.2, 31.1]
 
     steps:
     - uses: actions/checkout@v6
