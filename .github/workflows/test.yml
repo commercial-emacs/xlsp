@@ -39,7 +39,7 @@ jobs:
     - name: apt-get
       run: |
         sudo apt-get -yq update
-        DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install gnutls-bin sharutils gnupg2 dirmngr libreadline-dev libcurl4-openssl-dev clangd-12
+        DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install gnutls-bin sharutils gnupg2 dirmngr libreadline-dev libcurl4-openssl-dev clangd
 
     - uses: actions/checkout@v4
       with:
