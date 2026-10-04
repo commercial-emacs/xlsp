@@ -198,6 +198,8 @@ void main (void) {
     (should (looking-at (regexp-quote "  ")))
     (forward-line 1)
 
+    (defvar company-frontends)
+    (setq company-frontends nil)
     (eval
      (quote
       (test-xlsp-should
