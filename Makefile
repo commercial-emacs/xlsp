@@ -3,7 +3,6 @@ epkg.mk:
 	emacs --batch -l package -f package-initialize -l epkg -f epkg-copy-mk
 
 export EMACS ?= $(shell which emacs)
-EPKG_EL := $(filter-out _%,$(shell git ls-files *.el))
 EPKG_TEST_EL := $(shell git ls-files tests/*.el)
 EPKG_FILES := $(shell git ls-files *.el)
 EPKG_MAIN := xlsp.el
